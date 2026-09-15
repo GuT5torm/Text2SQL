@@ -34,6 +34,9 @@ htmlcov/
 # ---- 评测输出 ----
 eval/results/
 
+# ---- 部署运行产物 ----
+deploy/logs/
+
 # ---- 前端 ----
 frontend/node_modules/
 frontend/dist/
