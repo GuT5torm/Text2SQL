@@ -368,6 +368,24 @@ def _approx_score(question: str, phrases: list[str]) -> float:
     return best
 
 
+def _matched_time_terms(q: str, time_terms: list[dict[str, Any]]) -> list[str]:
+    """命中的相对时间词，长词在前。
+
+    与 time_range 的取首个命中不同，这里要把全部命中的时间词都找出来：
+    一句话里可能同时出现「截止昨天」和「这个月」，只有都摘掉才能挡住
+    「月」字把「下单月份」维度带进来。
+    """
+    labels = {_normalize(t["term"]) for t in time_terms}
+    return sorted([p for p in labels if p and p in q], key=len, reverse=True)
+
+
+def _strip_phrases(q: str, phrases: list[str]) -> str:
+    """从问题里摘掉指定片段。调用方保证片段已归一化。"""
+    for p in phrases:
+        q = q.replace(p, "")
+    return q
+
+
 def recall(question: str, catalog: Catalog, today: dt.date | None = None) -> SemanticHit:
     """按问题召回相关指标、表、维度、示例与时间区间。
 
@@ -384,45 +402,83 @@ def recall(question: str, catalog: Catalog, today: dt.date | None = None) -> Sem
             hit.time_range = resolve_time_term(term, today)
             break
 
+    time_words = _matched_time_terms(q, catalog.time_terms)
+
     # —— 2. 枚举值口语：只在召回结果里作提示，不参与打分 ——
     for vs in catalog.value_synonyms:
         if _normalize(vs["term"]) in q:
             hit.value_hints.append(f"「{vs['term']}」对应 {vs['field']} = '{vs['value']}'")
 
     # —— 3. 指标 ——
-    scored: list[tuple[float, dict[str, Any], list[str]]] = []
+    # 精确命中先过一遍「长短语支配短短语」。问「卖了多少钱」时，销量同义词里的
+    # 「卖了多少」是同一处说法的前缀，不能因为这一处说法多召回一个指标。
+    exact_hits: list[tuple[str, str, float]] = []  # (短语, 指标名, 贡献分)
+    original_of: dict[str, str] = {}  # 归一化短语 → 配置里的原始写法
     for m in catalog.metrics:
         phrases = [m["display"], m["name"], *(m.get("synonyms") or [])]
-        score, hits = _score(q, phrases)
-        if score == 0.0:
-            approx = _approx_score(q, phrases)
-            score = approx * 1.5
-        if score > 0:
-            scored.append((score, m, hits))
-    scored.sort(key=lambda x: -x[0])
+        for phrase in phrases:
+            p = _normalize(phrase)
+            if p and p in q:
+                exact_hits.append((p, m["name"], 1.0 + 0.35 * len(p)))
+                original_of.setdefault(p, phrase)
 
-    # 同义词表命中的指标类词，直接纳入（精确度高于近似匹配）
+    all_exact = {p for p, _, _ in exact_hits}
+    dominated = {
+        p
+        for p in all_exact
+        if any(other != p and len(other) > len(p) and p in other for other in all_exact)
+    }
+
+    picked: dict[str, float] = {}
+    metric_hits: dict[str, list[str]] = {}
+    for p, name, contribution in exact_hits:
+        if p in dominated:
+            continue
+        picked[name] = picked.get(name, 0.0) + contribution
+        metric_hits.setdefault(name, []).append(original_of[p])
+
+    # 同义词表命中的指标类词，精确度高，配得上一档固定加分
     syn_metric_hits: dict[str, float] = {}
     for s in catalog.synonyms:
         if s.get("type") == "metric" and _normalize(s["term"]) in q:
-            syn_metric_hits[s["maps_to"]] = syn_metric_hits.get(s["maps_to"], 0) + 1.0
-
-    picked: dict[str, float] = {}
-    for score, m, _hits in scored:
-        picked[m["name"]] = max(picked.get(m["name"], 0.0), score)
+            syn_metric_hits[s["maps_to"]] = syn_metric_hits.get(s["maps_to"], 0.0) + 2.0
     for name, bonus in syn_metric_hits.items():
-        picked[name] = picked.get(name, 0.0) + bonus * 2.0
+        picked[name] = picked.get(name, 0.0) + bonus
+
+    # 近似匹配只在整句一个精确信号都没有时才兜底。此前它与精确命中并行，
+    # 结果是「卖了多少钱」里一个精确命中，就能让「赚了多少」靠字形相近混进来。
+    if not picked:
+        for m in catalog.metrics:
+            phrases = [m["display"], m["name"], *(m.get("synonyms") or [])]
+            approx = _approx_score(q, phrases)
+            if approx > 0:
+                picked[m["name"]] = approx * 1.5
 
     ordered = sorted(picked.items(), key=lambda x: -x[1])[:MAX_METRICS]
     hit.metrics = [catalog.metric_by_name[n] for n, _ in ordered if n in catalog.metric_by_name]
 
     # —— 4. 维度 ——
+    # 时间词先摘掉再打维度分：否则「上个月」里的「月」会带出 order_month，
+    # 「上季度」里的「季度」同理。时间语义已由 time_range 承担，
+    # 用户没有要求按月看时不应再出现为一个下钻维度。
+    q_dims = _strip_phrases(q, time_words)
+
+    # 说了具体的枚举值，等于说了那个字段：无论是按它过滤还是按它分组，
+    # 对应维度都该参与打分，只给取值提示不足以让后续环节知道该怎么 GROUP BY。
+    dim_credit: dict[str, float] = {}
+    for vs in catalog.value_synonyms:
+        if _normalize(vs["term"]) in q_dims:
+            for d in catalog.dimensions:
+                if vs["field"] in (d.get("expression") or ""):
+                    dim_credit[d["name"]] = dim_credit.get(d["name"], 0.0) + 2.0
+
     dim_scored: list[tuple[float, dict[str, Any]]] = []
     for d in catalog.dimensions:
         phrases = [d["display"], d["name"], *(d.get("synonyms") or [])]
-        score, _hits = _score(q, phrases)
+        score, _hits = _score(q_dims, phrases)
         if score == 0:
-            score = _approx_score(q, phrases)
+            score = _approx_score(q_dims, phrases)
+        score += dim_credit.get(d["name"], 0.0)
         if score > 0:
             dim_scored.append((score, d))
     dim_scored.sort(key=lambda x: -x[0])
@@ -469,7 +525,8 @@ def recall(question: str, catalog: Catalog, today: dt.date | None = None) -> Sem
 
     # —— 7. 记录命中的词，供日志与前端口径标注 ——
     hit.matched_terms = sorted(
-        {t for m in scored for t in m[2]} | {s["term"] for s in catalog.synonyms if _normalize(s["term"]) in q},
+        {t for terms in metric_hits.values() for t in terms}
+        | {s["term"] for s in catalog.synonyms if _normalize(s["term"]) in q},
         key=len,
         reverse=True,
     )[:8]

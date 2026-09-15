@@ -65,6 +65,30 @@ synonyms:
 
 value_synonyms:
   # —— 大区
+  # 华东 / 华南 这类写法与库里的取值同名。登记它们不是为了翻译，
+  # 而是为了在说出具体大区时把「销售大区」维度一并拉起来：
+  # 光有取值提示，后续环节不知道该按哪个字段 GROUP BY。
+  - term: 华东
+    field: orders.region
+    value: 华东
+  - term: 华南
+    field: orders.region
+    value: 华南
+  - term: 华北
+    field: orders.region
+    value: 华北
+  - term: 华中
+    field: orders.region
+    value: 华中
+  - term: 西南
+    field: orders.region
+    value: 西南
+  - term: 西北
+    field: orders.region
+    value: 西北
+  - term: 东北
+    field: orders.region
+    value: 东北
   - term: 江浙沪
     field: orders.region
     value: 华东

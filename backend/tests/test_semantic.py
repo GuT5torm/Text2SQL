@@ -276,6 +276,60 @@ def test_recall_examples_come_from_hit_metrics(catalog: Catalog) -> None:
 
 
 # ---------------------------------------------------------------------------
+# 召回精度：四条来自评测基线的回归
+# ---------------------------------------------------------------------------
+
+
+def test_recall_longer_phrase_shadows_shorter_one(catalog: Catalog) -> None:
+    """「卖了多少钱」里含「卖了多少」，不该因此把销量一起召回。"""
+    hit = recall("本周卖了多少钱", catalog, TODAY)
+    assert [m["name"] for m in hit.metrics] == ["gmv"]
+
+
+def test_recall_multi_metric_question_keeps_all(catalog: Catalog) -> None:
+    """多个互不覆盖的说法同时出现时，支配规则不能误删其中一个。"""
+    hit = recall("上个月各区域的成交额、销量和订单量", catalog, TODAY)
+    assert {m["name"] for m in hit.metrics} == {"gmv", "sales_volume", "order_count"}
+
+
+def test_recall_colloquial_volume_maps_to_sales_volume(catalog: Catalog) -> None:
+    for question in ("近三个月每月卖出多少件", "昨天卖出去多少货"):
+        hit = recall(question, catalog, TODAY)
+        assert [m["name"] for m in hit.metrics] == ["sales_volume"], question
+
+
+def test_recall_time_word_does_not_become_dimension(catalog: Catalog) -> None:
+    """相对时间已被换算成区间，不应再以「月」「季度」的形式出现为下钻维度。"""
+    assert [d["name"] for d in recall("上个月各区域的销售额", catalog, TODAY).dimensions] == ["region"]
+    assert [d["name"] for d in recall("我上个月进账多少", catalog, TODAY).dimensions] == []
+
+
+def test_recall_all_time_words_are_stripped(catalog: Catalog) -> None:
+    """一句话里出现两个时间词时，两个都要摘掉，漏一个就会串出月份维度。"""
+    hit = recall("截止昨天这个月的出单量是多少", catalog, TODAY)
+    assert [d["name"] for d in hit.dimensions] == []
+
+
+def test_recall_explicit_month_drilldown_survives_stripping(catalog: Catalog) -> None:
+    """用户明说「每月」时月份维度必须保留，不能和时间词一起被摘掉。"""
+    hit = recall("近半年每月销售额走势", catalog, TODAY)
+    assert "order_month" in {d["name"] for d in hit.dimensions}
+
+
+def test_recall_trend_word_implies_time_dimension(catalog: Catalog) -> None:
+    """问「走势」等于要求按时间展开，只是没说按月。"""
+    hit = recall("近半年件单价走势", catalog, TODAY)
+    assert "order_month" in {d["name"] for d in hit.dimensions}
+
+
+def test_recall_value_synonym_pulls_its_dimension(catalog: Catalog) -> None:
+    """说出具体枚举值时，字段对应的维度也要参与打分。"""
+    assert "region" in {d["name"] for d in recall("江浙沪上个月卖了多少钱", catalog, TODAY).dimensions}
+    hit = recall("上个季度华东区各品类的成交总额", catalog, TODAY)
+    assert {d["name"] for d in hit.dimensions} == {"category_name", "region"}
+
+
+# ---------------------------------------------------------------------------
 # 上下文渲染
 # ---------------------------------------------------------------------------
 

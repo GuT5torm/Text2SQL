@@ -203,7 +203,9 @@ dimensions:
 
   - name: order_month
     display: 下单月份
-    synonyms: [每月, 按月, 月度, 月份, 月]
+    # 走势 / 趋势：说这两个词时用户要的是随时间变化，但不一定明说「按月」。
+    # 落到月份而非日期，是因为环比同比的常规粒度是月，日粒度噪声过大。
+    synonyms: [每月, 按月, 月度, 月份, 月, 走势, 趋势]
     expression: "strftime('%Y-%m', orders.created_at)"
     tables: [orders]
 

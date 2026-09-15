@@ -56,7 +56,9 @@ metrics:
 
   - name: sales_volume
     display: 销量
-    synonyms: [卖了多少, 销售量, 卖出的件数, 销售件数, 件数, 销量]
+    # 「卖了多少」写在口语说法之后：两者同时出现在一句里时，召回按长短语优先处理，
+    # 见 loader.recall 的支配规则。
+    synonyms: [卖出多少件, 卖了多少件, 卖出去多少货, 出了多少货, 卖了多少, 销售量, 卖出的件数, 销售件数, 件数, 销量]
     expression: "SUM(oi.quantity)"
     tables: [orders, order_items]
     required_filters:
