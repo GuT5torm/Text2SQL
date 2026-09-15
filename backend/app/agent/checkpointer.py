@@ -39,6 +39,12 @@ def build_checkpointer(settings: Settings | None = None) -> Any:
         import sqlite3
 
         conn = sqlite3.connect(s.app_db_path.as_posix(), check_same_thread=False)
+        # 这个连接与 add_turn 的 SQLAlchemy 写连接指向同一个库文件。SQLite 的
+        # 写锁是库级的，不给 busy_timeout 时，两者撞在一起会直接抛
+        # "database is locked"。WAL 让读不阻塞写，两个 PRAGMA 必须一起设，
+        # 与 create_app_engine 保持一致。
+        conn.execute("PRAGMA journal_mode = WAL")
+        conn.execute("PRAGMA busy_timeout = 5000")
         saver = SqliteSaver(conn)
         saver.setup()
         logger.info("会话记忆使用 SQLiteSaver：%s", s.app_db_path)

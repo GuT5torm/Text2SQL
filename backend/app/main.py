@@ -122,5 +122,17 @@ async def _semantic_error_handler(_request: Request, exc: SemanticError) -> JSON
 
 if FRONTEND_DIST.exists():
     app.mount("/", StaticFiles(directory=FRONTEND_DIST, html=True), name="frontend")
+
+    @app.middleware("http")
+    async def _no_cache_index(request: Request, call_next) -> Any:
+        """入口 HTML 不缓存。
+
+        带内容 hash 的 chunk 可以长缓存，index.html 不行：发版后旧入口仍会去
+        请求已经不存在的旧 chunk，页面白屏且控制台只报一堆 404，很难定位。
+        """
+        response = await call_next(request)
+        if request.url.path in ("/", "/index.html"):
+            response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+        return response
 else:
     logger.info("未发现前端构建产物 %s，仅提供 API。开发时请单独启动 vite。", FRONTEND_DIST)
