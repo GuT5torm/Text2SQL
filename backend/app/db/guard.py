@@ -5,9 +5,9 @@
 技术亮点，需要有可逐条核对的规则与用例。
 
 守卫在只读连接之前生效，职责是「判能不能执行、必要时改写」，不负责执行。
-执行期的时间与行数限制由 sqlite_repo 承担。
+执行期的时间、行数和结果体积限制由 sqlite_repo 承担。
 
-八条规则与错误码：
+九条规则与错误码：
 
   R1_SINGLE_STATEMENT   只允许单条语句
   R2_SELECT_ONLY        只允许查询类语句（SELECT / UNION / EXCEPT / INTERSECT）
@@ -17,6 +17,7 @@
   R6_LIMIT_ENFORCED     无 LIMIT 或 LIMIT 超限时自动包裹
   R7_CARTESIAN_JOIN     多表查询必须带连接条件
   R8_STATEMENT_TIMEOUT  执行超时，由 sqlite_repo 用 progress handler 实现
+  R9_FUNCTION_ALLOWED   只允许白名单内的函数
 """
 
 from __future__ import annotations
@@ -69,11 +70,87 @@ FORBIDDEN_NODES = tuple(
 # 允许出现的库名前缀。SQLite 的 main 是默认库，带 main. 前缀属正常写法
 ALLOWED_DB_PREFIX = {"", "main"}
 
+# 函数白名单。守卫的意义是不信任模型的任何输出，因此也不能把兜底交给驱动层：
+# randomblob 单次可产生 1e9 字节，load_extension / writefile / readfile 是否可用
+# 只取决于 SQLite 的编译选项，换个构建就可能有完全不同的行为。这里按名字放行
+# 常用函数，白名单外一律拒绝。
+#
+# 明确被挡在门外的（都不在白名单内）：
+#   randomblob / zeroblob   按参数分配内存，一条语句即可耗尽进程内存
+#   load_extension          加载外部动态库
+#   readfile / writefile    读写文件系统（CLI 专属，但不应依赖这一点）
+#   edit / fts3_tokenizer   同样属于不该出现在分析查询里的函数
+#   sqlite_*                内部与诊断函数，一并拒绝
+ALLOWED_FUNCTIONS = frozenset(
+    {
+        # 聚合
+        "count", "sum", "avg", "min", "max", "total", "group_concat",
+        # 数学
+        "abs", "round", "ceil", "ceiling", "floor", "trunc", "exp", "ln", "log",
+        "log2", "log10", "pow", "power", "sqrt", "mod", "sign",
+        "acos", "asin", "atan", "atan2", "cos", "sin", "tan",
+        "cosh", "sinh", "tanh", "degrees", "radians", "pi", "random",
+        # 字符串
+        "length", "char_length", "character_length", "lower", "upper", "ltrim",
+        "rtrim", "trim", "substr", "substring", "replace", "instr", "concat",
+        "concat_ws", "printf", "format", "reverse", "lpad", "rpad", "left",
+        "right", "repeat", "split_part", "like", "glob", "quote", "hex",
+        "unhex", "unicode", "char", "chr", "soundex", "startswith", "endswith",
+        # 日期时间
+        "date", "time", "datetime", "julianday", "strftime", "unixepoch",
+        "current_date", "current_time", "current_timestamp",
+        # 空值与类型转换
+        "coalesce", "ifnull", "nullif", "iif", "if", "cast", "typeof",
+        # 窗口函数
+        "row_number", "rank", "dense_rank", "percent_rank", "cume_dist",
+        "ntile", "lag", "lead", "first_value", "last_value", "nth_value",
+        # JSON（SQLite 3.38+ 内置）
+        "json", "json_array", "json_object", "json_extract", "json_valid",
+        "json_type", "json_length", "json_group_array", "json_group_object",
+        "json_each", "json_tree", "json_quote", "json_insert", "json_set",
+        "json_replace", "json_remove", "json_patch",
+    }
+)
+
 _FENCE_RE = re.compile(r"^\s*```(?:sql)?\s*|\s*```\s*$", re.IGNORECASE)
+
+# sqlglot 把逻辑运算符也挂在 Func 之下（And 的 MRO 是 And → Connector → Binary
+# → Func），它们不是函数调用。不排除的话每条带 WHERE 的查询都会被 R9 拦下。
+# 按名称取而不是写属性，理由同 FORBIDDEN_NODES。
+_NON_FUNCTION_NODE_NAMES = ("And", "Or", "Not", "Xor", "Connector", "Binary", "Paren")
+
+NON_FUNCTION_NODES = tuple(
+    node for node in (getattr(exp, name, None) for name in _NON_FUNCTION_NODE_NAMES)
+    if node is not None
+)
 
 # 恒真条件节点。sqlglot 读 sqlite 方言时会给缺 ON 的 JOIN 补一个 TRUE，
 # 节点名写成字符串是为了兼容各版本的命名差异（Boolean / True_）
 _TRUE_NODE_NAMES = ("Boolean", "True_")
+
+
+_FUNC_NAME_RE = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*\(")
+
+
+def _function_name(node: exp.Expression, dialect: str) -> str | None:
+    """取函数在目标方言下的真实名字。
+
+    不能直接拿 sql_name() 比对：它给的是 sqlglot 的内部类名，strftime 会被
+    解析成 TimeToStr（sql_name 为 TIME_TO_STR），照此比对会把常用日期函数误杀。
+    渲染回 SQLite 得到的才是实际发给驱动的函数名。
+
+    取不到名字时返回 None，表示该节点不是真正的函数调用——sqlglot 会给日期
+    函数的实参套一层隐式转换节点（TsOrDsToTimestamp），渲染出来是裸标识符，
+    没有括号，不属于需要校验的对象。
+    """
+    try:
+        rendered = node.sql(dialect=dialect)
+    except Exception:  # 渲染不出来时退到类名，宁可误杀也不放行无法识别的调用
+        return (node.sql_name() or "").lower() or None
+    match = _FUNC_NAME_RE.match(rendered)
+    # 不带括号说明这不是函数调用，而是 sqlglot 给日期参数套的隐式转换节点
+    # （TsOrDsToTimestamp 渲染出来就是裸的列引用 o.created_at）
+    return match.group(1).lower() if match else None
 
 
 def _alias_to_real(stmt: exp.Expression) -> dict[str, str]:
@@ -203,6 +280,9 @@ class SqlGuard:
         # R5 字段
         columns, column_errors = self._check_columns(stmt, tables)
         errors.extend(column_errors)
+
+        # R9 函数白名单
+        errors.extend(self._check_functions(stmt))
 
         if errors:
             return GuardResult(
@@ -395,6 +475,28 @@ class SqlGuard:
         ][:3]
         return f"，是否为 {'、'.join(close)}？" if close else ""
 
+    # —— R9 ——
+    def _check_functions(self, stmt: exp.Expression) -> list[str]:
+        """只允许白名单内的函数。
+
+        这一条补的是 R1–R8 留下的缺口：前面几条都在管「查哪些表、取哪些字段、
+        返回多少行」，没有管「用什么函数算」。randomblob(1000000000) 不碰任何
+        表、只返回一行，R1–R8 全部放行，结果集却有 1 GB。
+        """
+        errors: list[str] = []
+        seen: set[str] = set()
+        for node in stmt.find_all(exp.Func):
+            if isinstance(node, NON_FUNCTION_NODES):
+                continue
+            name = _function_name(node, self.dialect)
+            if name is None or name in ALLOWED_FUNCTIONS:
+                continue
+            if name in seen:
+                continue
+            seen.add(name)
+            errors.append(f"R9 不允许使用函数 {name}")
+        return errors
+
     # —— R6 ——
     def _enforce_limit(self, sql: str, stmt: exp.Expression) -> tuple[str, int | None]:
         exist_limit = self._read_limit(stmt)
@@ -410,10 +512,14 @@ class SqlGuard:
 
     @staticmethod
     def _read_limit(stmt: exp.Expression) -> int | None:
-        limit = stmt.args.get("limit") if isinstance(stmt, exp.Expression) else None
-        node = limit
-        if node is None:
-            node = stmt.find(exp.Limit)
+        """只认顶层的 LIMIT，禁止向子树里找。
+
+        早期实现在顶层取不到时会退到 stmt.find(exp.Limit)。UNION 的两个分支各
+        自带 LIMIT 900 时，顶层没有 LIMIT，find 会取到分支里的 900，判定
+        0 < 900 <= 1000 后放行——而分支的 LIMIT 约束的是分支自身，UNION 最终
+        返回的是两分支之和。守卫以为完成了限流，实际没有。
+        """
+        node = stmt.args.get("limit")
         if node is None:
             return None
         # exp.Limit 在不同版本里计数存在 this 或 expression 上，两处都试

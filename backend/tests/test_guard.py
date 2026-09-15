@@ -223,6 +223,94 @@ def test_r6_preserves_order_by_after_wrapping(guard: SqlGuard) -> None:
     assert result.sql.index("ORDER BY") < result.sql.index("LIMIT")
 
 
+def test_r6_wraps_union_with_limited_branches(guard: SqlGuard) -> None:
+    """两个分支各自带 LIMIT 时顶层没有 LIMIT，必须包裹。
+
+    分支的 LIMIT 只约束分支自身，UNION 返回的是两分支之和。守卫若向子树里
+    找 LIMIT，会取到分支的 900、判定未超限后放行，限流形同虚设。
+    """
+    sql = (
+        "SELECT id FROM (SELECT id FROM orders LIMIT 900) "
+        "UNION ALL SELECT id FROM (SELECT id FROM order_items LIMIT 900)"
+    )
+    result = guard.check(sql)
+    assert result.ok
+    assert result.limit_applied == guard.max_rows
+    assert result.rewritten
+
+
+def test_r6_keeps_union_level_limit(guard: SqlGuard) -> None:
+    """LIMIT 挂在 UNION 顶层时是有效的，不需要改写。"""
+    sql = "SELECT id FROM orders UNION ALL SELECT order_id FROM order_items LIMIT 5"
+    result = guard.check(sql)
+    assert result.ok
+    assert result.limit_applied is None
+    assert not result.rewritten
+
+
+def test_r6_wraps_union_without_limit(guard: SqlGuard) -> None:
+    result = guard.check("SELECT id FROM orders UNION ALL SELECT order_id FROM order_items")
+    assert result.ok
+    assert result.limit_applied == guard.max_rows
+
+
+# ---------------------------------------------------------------------------
+# R9 函数白名单
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT randomblob(100000000)",
+        "SELECT zeroblob(100000000)",
+        "SELECT load_extension('nope.dll')",
+        "SELECT writefile('/tmp/pwn.txt', 'abc')",
+        "SELECT readfile('/etc/passwd')",
+        "SELECT sqlite_version()",
+    ],
+)
+def test_r9_rejects_dangerous_functions(guard: SqlGuard, sql: str) -> None:
+    """这些函数不碰任何表、只返回一行，R1–R8 全部放行，只能靠 R9 拦。"""
+    result = guard.check(sql)
+    assert not result.ok
+    assert "R9" in errors_of(result)
+
+
+def test_r9_rejects_function_hidden_in_subquery(guard: SqlGuard) -> None:
+    result = guard.check("SELECT * FROM (SELECT randomblob(100000000) AS b) AS t")
+    assert not result.ok
+    assert "randomblob" in errors_of(result)
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT COUNT(*) AS n FROM orders LIMIT 5",
+        "SELECT COUNT(DISTINCT user_id) AS n FROM orders LIMIT 5",
+        "SELECT ROUND(AVG(quantity * unit_price), 2) AS n FROM order_items LIMIT 5",
+        "SELECT strftime('%Y-%m', created_at) AS m, COUNT(*) AS n FROM orders GROUP BY m LIMIT 5",
+        "SELECT date(created_at) AS d, COUNT(*) AS n FROM orders GROUP BY d LIMIT 5",
+        "SELECT COALESCE(region, '未知') AS r FROM orders LIMIT 5",
+        "SELECT LOWER(region) AS r, UPPER(channel) AS c FROM orders LIMIT 5",
+        "SELECT LENGTH(region) AS n FROM orders LIMIT 5",
+        "SELECT CAST(id AS TEXT) AS t FROM orders LIMIT 5",
+        "SELECT MAX(created_at) AS m FROM orders LIMIT 5",
+        "SELECT julianday(created_at) AS j FROM orders LIMIT 5",
+        "SELECT substr(created_at, 1, 7) AS m FROM orders LIMIT 5",
+    ],
+)
+def test_r9_accepts_common_functions(guard: SqlGuard, sql: str) -> None:
+    result = guard.check(sql)
+    assert result.ok, f"{sql} 被误拦：{result.error_text()}"
+
+
+def test_r9_reports_each_offending_function_once(guard: SqlGuard) -> None:
+    result = guard.check("SELECT randomblob(1), randomblob(2), load_extension(3)")
+    assert not result.ok
+    assert errors_of(result).count("R9") == 2
+
+
 # ---------------------------------------------------------------------------
 # R7 多表必须有连接条件
 # ---------------------------------------------------------------------------
