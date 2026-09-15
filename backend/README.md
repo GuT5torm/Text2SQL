@@ -78,10 +78,15 @@ uvicorn app.main:app --reload --port 8000
 ```bash
 python tests/smoke.py                       # 端到端冒烟，不依赖密钥，也不需要服务已启动
 python -m pytest tests/ -q                  # 单元测试，122 条，约 4 秒
+python eval/run_eval.py                     # 评测集，50 条，约 20 秒
 curl http://127.0.0.1:8000/api/health       # PowerShell 下请用 (Invoke-WebRequest ...).Content
 ```
 
-`smoke.py` 用 FastAPI 的 TestClient 在进程内走完整链路：健康检查 → 语义层一致性 → 口径召回 → 建会话 → 三轮问答。
+前两项回答「能不能跑」，第三项回答「跑得准不准」。`eval/run_eval.py` 产出三项互不
+替代的指标：口径召回准确率、端到端可执行率、危险语句拦截率，详见 `eval/README.md`。
+报告写进 `eval/report.json`，不入库。
+
+冒烟脚本用 FastAPI 的 TestClient 在进程内走完整链路：健康检查 → 语义层一致性 → 口径召回 → 建会话 → 三轮问答。
 退出码 0 表示全部通过，非 0 时逐条打印失败原因。
 
 单元测试分五组，与分层一一对应：
@@ -131,7 +136,7 @@ backend/
 │   ├── seed.py            造数脚本，固定随机种子
 │   ├── ecommerce.db       样例业务库（造数生成，不入版本库）
 │   └── app.db             会话与回合的运行时库（自动生成，不入版本库）
-├── eval/                  评测集与基线脚本（P5 阶段建立）
+├── eval/                  cases.yaml 评测集 + run_eval.py 执行器，详见 eval/README.md
 └── tests/                 smoke.py 端到端冒烟 + 五个测试文件（conftest.py 提供共享夹具）
 ```
 
