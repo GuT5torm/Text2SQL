@@ -406,6 +406,7 @@ P2-T7 修掉 `stages` 跨轮累积后，`docs/` 下仍有表述停在修复前�
 | T32 | 8c1b2ef | 口径偏差第一条 | UIUX 第 198 行、语料 06 第 169 行、语料 14 第 227 行的 `status` / `duration_ms` 改为 `detail` / `elapsed_ms`，注明运行态由前端推导 | 与 `state.py:25-32` 的 `StageEvent` 逐字段对齐 |
 | T34 | 5b23af0 | 语义层四类召回缺陷 | `loader.recall` 增 `_matched_time_terms`（长词优先）与 `_strip_phrases`，维度打分前先摘掉时间词；指标改为精确命中 + 长短语支配，仅当整句无任何精确信号时才走近似兜底；`metrics.yaml` 补 `sales_volume` 口语说法；`tables.yaml` 给 `order_month` 加「走势 / 趋势」；`synonyms.yaml` 补七个大区取值同义并给对应维度加分 | 口径召回 19/32 → 32/32（指标 30/30、维度 29/29、时间 24/24、空召 2/2）；新增 8 条用例，后端 145 → 153 passed；`smoke.py` 退出码 0 |
 | T35 | e569fed | 案例 PPT 骨架 | `docs/ppt/Text2SQL案例PPT/` 新增 `STORY.md`、`DESIGN.md` 与 `slides/01-12.slide`，编译产出同名 pptx | 全部图形由 Box + Text 原生形状构成，pptx 内无 `ppt/media/` 条目，文字全在可编辑文本框；`slidep-validate --all` 12/12 passed |
+| T36 | 4fb36ea | 前后端联调验证 | 浏览器跑通完整问答流程，新增 `前后端联调验证记录.md` 与五张 `assets/verify-0*.png`；清理 `app.db` 中 11 条空白会话 | SSE 七节点逐个到达、图表与阶段明细渲染正常、会话落库与列表正常；桩实现的三条边界（不注入时间范围、指标模板与提问不对应、意图恒为 query）已记录 |
 
 #### T35 页面的事实核准
 
@@ -448,5 +449,5 @@ P2-T7 修掉 `stages` 跨轮累积后，`docs/` 下仍有表述停在修复前�
 
 #### 未处理
 
-报告第五节「待实测确认的两条」需要真实浏览器交互，本轮未验证：Vite dev 代理是否缓存 SSE 导致阶段一次性吐出；ECharts 在 `SplitPane` 拖到极窄后拉宽是否残留空白。
+报告第五节「待实测确认的两条」中，Vite dev 代理是否缓存 SSE 已在 T36 验证：页面经 5173 代理取数，七个阶段逐个渲染，代理未把进度攒到最后。另一条——ECharts 在 `SplitPane` 拖到极窄后拉宽是否残留空白——仍未验证。
 
