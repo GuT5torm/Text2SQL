@@ -41,6 +41,9 @@ deploy/logs/
 frontend/node_modules/
 frontend/dist/
 frontend/.vite/
+# 本机 npm 缓存目录。默认的 %LOCALAPPDATA%\npm-cache 在本机受权限限制，
+# 安装时用 --cache .npm-cache 指到这里
+frontend/.npm-cache/
 
 # ---- 工具与编辑器私有数据 ----
 .workbuddy/
