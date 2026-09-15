@@ -1,0 +1,40 @@
+# Text2SQL 电商数据分析 Agent —— 后端依赖清单
+#
+# 版本号取自本机 backend/.venv 的 pip freeze 结果（Python 3.13.14，Windows 11），
+# 该组合已通过端到端冒烟验证。版本号全部写死而非写下限，理由有三：
+#   1. sqlglot 各版本对 SQLite 方言的 AST 节点命名存在差异，守卫规则的节点判断依赖具体版本；
+#   2. langgraph 1.x 仍在快速迭代，图编译与 Checkpointer 接口有破坏性变更记录；
+#   3. 演示与评测要求结果可复现，浮动版本会让同一份代码在不同时间装出不同的包组合。
+# 如需升级，逐个升级并跑 tests/smoke.py 与 pytest 确认链路未断。
+
+# ---- Web 运行时 ----
+fastapi==0.141.1
+uvicorn[standard]==0.52.4        # standard 附带 httptools / websockets / watchfiles，热重载与 SSE 需要
+
+# ---- 配置与数据模型 ----
+pydantic==2.13.5
+pydantic-settings==2.15.0        # app/config.py 用 BaseSettings 读取 .env
+python-dotenv==1.2.3             # pydantic-settings 的依赖，显式列出便于锁定
+
+# ---- Agent 编排 ----
+langgraph==1.2.11                # 八节点状态机与条件边
+langgraph-checkpoint==4.2.0      # Checkpointer 基础实现，MemorySaver 由本包提供
+
+# ---- LLM 接入 ----
+openai==3.13.0                   # OpenAI 兼容协议客户端，用于连接国内大模型网关
+
+# ---- 数据访问 ----
+SQLAlchemy==2.0.52               # 仅用核心层做会话元数据存储，业务库走 sqlite3 直连
+
+# ---- SQL 解析 ----
+sqlglot==30.18.0                 # 守卫规则依赖它的 AST 节点名，升级务必先跑 test_guard.py
+
+# ---- 语义层 ----
+PyYAML==6.0.3                    # metrics.yaml / tables.yaml / synonyms.yaml
+
+# ---- 重试与容错 ----
+tenacity==9.1.4
+
+# ---- 测试 ----
+pytest==9.1.1
+httpx==0.28.1                    # fastapi TestClient 的底层依赖
