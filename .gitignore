@@ -1,0 +1,49 @@
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+build/
+dist/
+
+# ---- 虚拟环境（本机已有 backend/.venv，不入版本库）----
+.venv/
+venv/
+env/
+
+# ---- 本机配置与密钥 ----
+# .env 含 LLM_API_KEY 等敏感项，只提交 .env.example
+.env
+.env.*
+!.env.example
+
+# ---- 运行时数据 ----
+# ecommerce.db 由 data/seed.py 以固定随机种子生成，可随时复现，不入库；
+# app.db 为会话历史与检查点的运行时产物。
+backend/data/*.db
+backend/data/*.db-wal
+backend/data/*.db-shm
+
+# ---- 临时与日志 ----
+backend/_*.txt
+*.log
+.pytest_cache/
+.coverage
+htmlcov/
+
+# ---- 评测输出 ----
+eval/results/
+
+# ---- 前端 ----
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+
+# ---- 工具与编辑器私有数据 ----
+.workbuddy/
+.vscode/
+.idea/
+.DS_Store
+
+# ---- 外部参考资料（版权不属于本项目）----
+参考/
