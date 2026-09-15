@@ -1,0 +1,252 @@
+# 表结构与字段元数据
+#
+# 本文件是「字段白名单」的唯一来源：db/guard.py 校验生成的 SQL 时，
+# 出现的每一张表、每一个字段都必须在此登记，否则视为模型编造，直接拦截。
+#
+# 字段说明：
+#   name / type / display   物理名、类型、中文显示名
+#   enum                    枚举值含义，帮助模型理解 status 这类编码字段
+#   note                    特殊约定，例如日期函数用法
+#
+# 维度单列在文件末尾的 dimensions 段。维度不是物理列（例如「月份」由
+# created_at 派生），但它们是业务提问的最小单位，必须与指标分开维护。
+
+tables:
+  - name: users
+    display: 用户表
+    synonyms: [用户, 会员, 买家, 客户, 消费者]
+    grain: 一行一个注册用户
+    fields:
+      - name: id
+        type: INTEGER
+        display: 用户ID
+      - name: name
+        type: TEXT
+        display: 用户昵称
+      - name: city
+        type: TEXT
+        display: 所在城市
+      - name: level
+        type: TEXT
+        display: 会员等级
+        enum:
+          normal: 普通会员
+          silver: 银卡
+          gold: 金卡
+          platinum: 白金卡
+      - name: channel
+        type: TEXT
+        display: 注册渠道
+        enum:
+          app: App
+          h5: H5
+          miniprogram: 小程序
+          pc: PC
+      - name: register_date
+        type: TEXT
+        display: 注册日期
+        note: 格式 YYYY-MM-DD
+
+  - name: categories
+    display: 商品类目表
+    synonyms: [类目, 分类, 品类, 类目树]
+    grain: 一行一个类目；parent_id 为空表示一级类目
+    fields:
+      - name: id
+        type: INTEGER
+        display: 类目ID
+      - name: name
+        type: TEXT
+        display: 类目名称
+      - name: parent_id
+        type: INTEGER
+        display: 上级类目ID
+        note: 为空表示一级类目；统计「各品类」时通常取 level 2 的类目，并 JOIN 自身取一级类目名
+
+  - name: products
+    display: 商品表
+    synonyms: [商品, 产品, 货品, SPU]
+    grain: 一行一个商品
+    fields:
+      - name: id
+        type: INTEGER
+        display: 商品ID
+      - name: name
+        type: TEXT
+        display: 商品名称
+      - name: category_id
+        type: INTEGER
+        display: 所属类目ID
+        ref: categories.id
+      - name: brand
+        type: TEXT
+        display: 品牌
+      - name: cost_price
+        type: REAL
+        display: 成本价
+      - name: list_price
+        type: REAL
+        display: 标价
+        note: 非成交价。成交价在 order_items.unit_price
+
+  - name: orders
+    display: 订单表
+    synonyms: [订单, 单子, 交易, 单量]
+    grain: 一行一个订单
+    fields:
+      - name: id
+        type: INTEGER
+        display: 订单ID
+      - name: user_id
+        type: INTEGER
+        display: 下单用户ID
+        ref: users.id
+      - name: status
+        type: TEXT
+        display: 订单状态
+        enum:
+          pending: 待支付
+          paid: 已支付
+          shipped: 已发货
+          completed: 已完成
+          cancelled: 已取消
+          refunded: 已退款
+        note: 统计成交类指标时需排除 cancelled；需要口径一致时同时排除 pending
+      - name: region
+        type: TEXT
+        display: 销售大区
+        enum:
+          华东: 华东
+          华南: 华南
+          华北: 华北
+          华中: 华中
+          西南: 西南
+          西北: 西北
+          东北: 东北
+      - name: channel
+        type: TEXT
+        display: 下单渠道
+        enum:
+          app: App
+          h5: H5
+          miniprogram: 小程序
+          pc: PC
+      - name: created_at
+        type: TEXT
+        display: 下单时间
+        note: 存储为 ISO8601 字符串，日期函数使用 SQLite 的 strftime / date
+      - name: paid_at
+        type: TEXT
+        display: 支付时间
+        note: 未支付订单此字段为空
+
+  - name: order_items
+    display: 订单明细表
+    synonyms: [订单明细, 明细, 成交明细, 行项目]
+    grain: 一行一个订单中的一个商品
+    join: "order_items.order_id = orders.id"
+    fields:
+      - name: id
+        type: INTEGER
+        display: 明细ID
+      - name: order_id
+        type: INTEGER
+        display: 所属订单ID
+        ref: orders.id
+      - name: product_id
+        type: INTEGER
+        display: 商品ID
+        ref: products.id
+      - name: quantity
+        type: INTEGER
+        display: 购买数量
+      - name: unit_price
+        type: REAL
+        display: 成交单价
+        note: 已含折扣，不等于 products.list_price
+
+  - name: refunds
+    display: 退款表
+    synonyms: [退款, 退货, 售后, 退单]
+    grain: 一行一次退款；同一订单可能发生部分退款
+    join: "refunds.order_id = orders.id"
+    fields:
+      - name: id
+        type: INTEGER
+        display: 退款ID
+      - name: order_id
+        type: INTEGER
+        display: 关联订单ID
+        ref: orders.id
+      - name: amount
+        type: REAL
+        display: 退款金额
+      - name: reason
+        type: TEXT
+        display: 退款原因
+        enum:
+          七天无理由: 七天无理由
+          质量问题: 质量问题
+          发错货: 发错货
+          买家拒收: 买家拒收
+      - name: created_at
+        type: TEXT
+        display: 退款时间
+
+# 维度：业务提问的最小切片单位。表达式是可直接嵌入 SQL 的片段。
+dimensions:
+  - name: order_date
+    display: 下单日期
+    synonyms: [每天, 按天, 日, 日期]
+    expression: "date(orders.created_at)"
+    tables: [orders]
+
+  - name: order_month
+    display: 下单月份
+    synonyms: [每月, 按月, 月度, 月份, 月]
+    expression: "strftime('%Y-%m', orders.created_at)"
+    tables: [orders]
+
+  - name: order_quarter
+    display: 下单季度
+    synonyms: [每季度, 按季度, 季度]
+    expression: "strftime('%Y', orders.created_at) || '-Q' || ((CAST(strftime('%m', orders.created_at) AS INTEGER) + 2) / 3)"
+    tables: [orders]
+    note: 季度表达式较绕，生成 SQL 时优先在 Python 侧把「上季度」换算成具体日期区间做过滤，聚合仍用 order_month
+
+  - name: region
+    display: 销售大区
+    synonyms: [大区, 区域, 地区, 各区域]
+    expression: "orders.region"
+    tables: [orders]
+
+  - name: channel
+    display: 下单渠道
+    synonyms: [渠道, 各渠道, 来源]
+    expression: "orders.channel"
+    tables: [orders]
+
+  - name: category_name
+    display: 商品类目
+    synonyms: [品类, 类目, 分类, 各品类]
+    expression: "categories.name"
+    tables: [products, categories]
+    note: 需 JOIN products ON order_items.product_id = products.id，再 JOIN categories ON products.category_id = categories.id
+
+  - name: brand
+    display: 品牌
+    synonyms: [各品牌, 品牌维度]
+    expression: "products.brand"
+    tables: [products]
+
+  - name: user_level
+    display: 会员等级
+    synonyms: [会员等级, 等级, 各等级]
+    expression: "users.level"
+    tables: [users]
+
+  - name: city
+    display: 城市
+    synonyms: [城市, 各城市]
+    expression: "users.city"
+    tables: [users]

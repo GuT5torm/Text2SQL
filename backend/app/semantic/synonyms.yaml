@@ -1,0 +1,187 @@
+# 同义词与相对时间映射
+#
+# 分三段：
+#   synonyms        业务黑话 → 标准指标 / 字段。规则召回的第一入口，「流水」「进账」
+#                   这类说法不进这一层，模型就会去猜字段名。
+#   value_synonyms  枚举值口语 → 库内标准值。用户说「江浙沪」，库里存的是「华东」。
+#   time_terms      相对时间词 → 日期区间计算规则。放在语义层而不是交给模型算，
+#                   是为了让「上个月」「本季度」在任何一次提问中边界都一致。
+#
+# time_terms 的 kind 由 semantic/loader.py 实现，新增 kind 需同步改 loader。
+# 约定：区间一律左闭右开 [start, end)，与 SQL 里 created_at >= start AND < end 对应。
+
+synonyms:
+  # —— 指标类
+  - term: 流水
+    maps_to: gmv
+    type: metric
+  - term: 进账
+    maps_to: gmv
+    type: metric
+  - term: 业绩
+    maps_to: gmv
+    type: metric
+  - term: 出单量
+    maps_to: order_count
+    type: metric
+  - term: 转化单量
+    maps_to: order_count
+    type: metric
+  - term: 件单价
+    maps_to: aov
+    type: metric
+  - term: 人均消费
+    maps_to: aov
+    type: metric
+  - term: 退货
+    maps_to: refund_rate
+    type: metric
+  - term: 复购人数
+    maps_to: paying_users
+    type: metric
+  - term: 毛利率
+    maps_to: gross_profit
+    type: metric
+
+  # —— 字段与表类
+  - term: 客源
+    maps_to: users
+    type: table
+  - term: 货
+    maps_to: products
+    type: table
+  - term: 吊牌价
+    maps_to: products.list_price
+    type: field
+  - term: 进货价
+    maps_to: products.cost_price
+    type: field
+  - term: 到手价
+    maps_to: order_items.unit_price
+    type: field
+  - term: 下单时间点
+    maps_to: orders.created_at
+    type: field
+
+value_synonyms:
+  # —— 大区
+  - term: 江浙沪
+    field: orders.region
+    value: 华东
+  - term: 长三角
+    field: orders.region
+    value: 华东
+  - term: 珠三角
+    field: orders.region
+    value: 华南
+  - term: 广深
+    field: orders.region
+    value: 华南
+  - term: 京津冀
+    field: orders.region
+    value: 华北
+  - term: 川渝
+    field: orders.region
+    value: 西南
+
+  # —— 渠道
+  - term: 客户端
+    field: orders.channel
+    value: app
+  - term: 微信小程序
+    field: orders.channel
+    value: miniprogram
+  - term: 小程序
+    field: orders.channel
+    value: miniprogram
+  - term: 网页
+    field: orders.channel
+    value: h5
+  - term: 官网
+    field: orders.channel
+    value: pc
+
+  # —— 订单状态
+  - term: 有效订单
+    field: orders.status
+    value: 非 cancelled 与 pending
+  - term: 退掉的单
+    field: orders.status
+    value: refunded
+
+  # —— 会员等级
+  - term: 白卡
+    field: users.level
+    value: platinum
+  - term: 金主
+    field: users.level
+    value: gold
+
+  # —— 类目（业务口语与一级类目名不一致的）
+  - term: 数码
+    field: categories.name
+    value: 数码家电
+  - term: 3C
+    field: categories.name
+    value: 数码家电
+  - term: 彩妆护肤
+    field: categories.name
+    value: 美妆个护
+  - term: 吃食
+    field: categories.name
+    value: 食品生鲜
+  - term: 婴儿用品
+    field: categories.name
+    value: 母婴玩具
+
+time_terms:
+  - term: 今天
+    kind: today
+  - term: 昨天
+    kind: yesterday
+  - term: 本周
+    kind: this_week
+  - term: 上周
+    kind: last_week
+  - term: 本月
+    kind: this_month
+  - term: 这个月
+    kind: this_month
+  - term: 上个月
+    kind: last_month
+  - term: 上月
+    kind: last_month
+  - term: 本季度
+    kind: this_quarter
+  - term: 这个季度
+    kind: this_quarter
+  - term: 上季度
+    kind: last_quarter
+  - term: 上个季度
+    kind: last_quarter
+  - term: 今年
+    kind: this_year
+  - term: 本年度
+    kind: this_year
+  - term: 去年
+    kind: last_year
+  - term: 去年同期
+    kind: last_year
+  - term: 近7天
+    kind: last_n_days
+    n: 7
+  - term: 近30天
+    kind: last_n_days
+    n: 30
+  - term: 近三个月
+    kind: last_n_months
+    n: 3
+  - term: 近半年
+    kind: last_n_months
+    n: 6
+  - term: 上半年
+    kind: half_year
+    half: 1
+  - term: 下半年
+    kind: half_year
+    half: 2

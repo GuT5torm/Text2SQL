@@ -1,0 +1,387 @@
+"""SQL 安全守卫。
+
+即便演示场景只有自己使用，这一层也不能省。原因有两个：大模型的输出存在
+不确定性，一次 DROP TABLE 就意味着重建数据；同时这套机制本身是本项目的
+技术亮点，需要有可逐条核对的规则与用例。
+
+守卫在只读连接之前生效，职责是「判能不能执行、必要时改写」，不负责执行。
+执行期的时间与行数限制由 sqlite_repo 承担。
+
+八条规则与错误码：
+
+  R1_SINGLE_STATEMENT   只允许单条语句
+  R2_SELECT_ONLY        只允许查询类语句（SELECT / UNION / EXCEPT / INTERSECT）
+  R3_FORBIDDEN_KEYWORD  语句树中不得出现 DDL / DML / 管理类关键字
+  R4_TABLE_NOT_ALLOWED  表必须在语义层登记
+  R5_COLUMN_NOT_ALLOWED 字段必须存在于其所属表的元数据中
+  R6_LIMIT_ENFORCED     无 LIMIT 或 LIMIT 超限时自动包裹
+  R7_CARTESIAN_JOIN     多表查询必须带连接条件
+  R8_STATEMENT_TIMEOUT  执行超时，由 sqlite_repo 用 progress handler 实现
+"""
+
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass, field
+from typing import Any
+
+import sqlglot
+from sqlglot import exp
+
+# 语句级白名单：只有这四类能通过。其余一律拒绝，比维护一张黑名单更稳，
+# 因为新版本 sqlglot 增加的语句类型会自动落在拒绝侧。
+ALLOWED_STATEMENTS = (exp.Select, exp.Union, exp.Except, exp.Intersect)
+
+# 语句树中任何位置都不允许出现的节点。覆盖 SQLite 特有的 ATTACH / PRAGMA，
+# 以及 sqlglot 对无法识别的语句给出的兜底节点 Command —— VACUUM 这类没有
+# 独立节点类型的管理语句会落到 Command 上，因此不需要单独列。
+#
+# 节点名按名称取而不是直接写属性：sqlglot 各版本增删过表达式类（例如 Vacuum
+# 在 30.x 已被移除），硬写属性会在升级时报 AttributeError。取不到的节点说明
+# 该版本不解析这类语句，对应风险自然消失。
+_FORBIDDEN_NODE_NAMES = (
+    "Insert",
+    "Update",
+    "Delete",
+    "Drop",
+    "Create",
+    "Alter",
+    "AlterTable",
+    "TruncateTable",
+    "Attach",
+    "Detach",
+    "Pragma",
+    "Command",
+    "Merge",
+    "Grant",
+    "Transaction",
+    "Commit",
+    "Rollback",
+    "Vacuum",
+    "Use",
+    "Set",
+)
+
+FORBIDDEN_NODES = tuple(
+    node for node in (getattr(exp, name, None) for name in _FORBIDDEN_NODE_NAMES) if node is not None
+)
+
+# 允许出现的库名前缀。SQLite 的 main 是默认库，带 main. 前缀属正常写法
+ALLOWED_DB_PREFIX = {"", "main"}
+
+_FENCE_RE = re.compile(r"^\s*```(?:sql)?\s*|\s*```\s*$", re.IGNORECASE)
+
+
+def strip_sql_fence(text: str) -> str:
+    """去掉模型习惯性加上的 Markdown 代码围栏与结尾分号。"""
+    out = _FENCE_RE.sub("", text.strip())
+    return out.strip().rstrip(";").strip()
+
+
+@dataclass
+class GuardResult:
+    ok: bool
+    sql: str  # 通过校验后应当执行的语句，可能已被改写
+    original_sql: str
+    errors: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+    tables: list[str] = field(default_factory=list)
+    columns: list[str] = field(default_factory=list)
+    limit_applied: int | None = None
+
+    @property
+    def rewritten(self) -> bool:
+        return self.sql.strip() != self.original_sql.strip()
+
+    def error_text(self) -> str:
+        return "；".join(self.errors)
+
+
+class SqlGuard:
+    """按语义层的表与字段白名单校验 SQL。"""
+
+    def __init__(self, field_refs: dict[str, set[str]], max_rows: int = 1000, dialect: str = "sqlite"):
+        self.field_refs = {k.lower(): {f.lower() for f in v} for k, v in field_refs.items()}
+        self.max_rows = max_rows
+        self.dialect = dialect
+
+    @classmethod
+    def from_catalog(cls, catalog: Any, max_rows: int = 1000) -> "SqlGuard":
+        return cls(catalog.all_field_refs(), max_rows=max_rows)
+
+    # —— 对外入口 ——
+    def check(self, sql: str) -> GuardResult:
+        original = strip_sql_fence(sql or "")
+        errors: list[str] = []
+        warnings: list[str] = []
+
+        if not original:
+            return GuardResult(False, "", original, errors=["生成的 SQL 为空"])
+
+        # R1 单条语句
+        try:
+            statements = [s for s in sqlglot.parse(original, read=self.dialect) if s is not None]
+        except Exception as exc:  # sqlglot 的解析异常类型随版本变化，统一兜住
+            return GuardResult(
+                False, original, original, errors=[f"SQL 解析失败，无法校验：{exc}"]
+            )
+
+        if len(statements) == 0:
+            return GuardResult(False, original, original, errors=["未解析出任何语句"])
+        if len(statements) > 1:
+            return GuardResult(
+                False,
+                original,
+                original,
+                errors=[f"检测到 {len(statements)} 条语句，只允许单条查询"],
+            )
+
+        stmt = statements[0]
+
+        # R2 语句类型
+        if not isinstance(stmt, ALLOWED_STATEMENTS):
+            errors.append(
+                f"只允许 SELECT 查询，当前语句类型为 {type(stmt).__name__.upper()}"
+            )
+
+        # R3 危险节点
+        for forbidden in FORBIDDEN_NODES:
+            found = stmt.find(forbidden)
+            if found is not None:
+                errors.append(f"语句中包含被禁止的 {type(found).__name__.upper()} 操作")
+                break
+
+        # R4 / R7 表与连接
+        tables, table_errors, join_errors = self._check_tables(stmt)
+        errors.extend(table_errors)
+        errors.extend(join_errors)
+
+        # R5 字段
+        columns, column_errors = self._check_columns(stmt, tables)
+        errors.extend(column_errors)
+
+        if errors:
+            return GuardResult(
+                False,
+                original,
+                original,
+                errors=errors,
+                tables=sorted(tables),
+                columns=sorted(columns),
+            )
+
+        # R6 强制 LIMIT
+        final_sql, applied = self._enforce_limit(original, stmt)
+        if applied:
+            warnings.append(
+                f"原语句未限定或超出结果行数上限，已包裹为最多返回 {applied} 行"
+            )
+
+        return GuardResult(
+            True,
+            final_sql,
+            original,
+            errors=[],
+            warnings=warnings,
+            tables=sorted(tables),
+            columns=sorted(columns),
+            limit_applied=applied,
+        )
+
+    # —— R4 / R7 ——
+    def _check_tables(self, stmt: exp.Expression) -> tuple[set[str], list[str], list[str]]:
+        errors: list[str] = []
+        join_errors: list[str] = []
+        tables: set[str] = set()
+
+        # CTE 名不是真实表，必须排除，否则 WITH 子句会被误判为越权
+        cte_names = {
+            cte.alias.lower() for cte in stmt.find_all(exp.CTE) if cte.alias
+        }
+        # 子查询别名同样不是表名
+        subquery_aliases = {
+            sub.alias.lower()
+            for sub in stmt.find_all(exp.Subquery)
+            if sub.alias
+        }
+
+        for table in stmt.find_all(exp.Table):
+            name = (table.name or "").lower()
+            db = (table.db or "").lower()
+            if db and db not in ALLOWED_DB_PREFIX:
+                errors.append(f"R4 不允许访问 {db} 库中的表 {name}")
+                continue
+            if not name or name in cte_names or name in subquery_aliases:
+                continue
+            tables.add(name)
+            if name not in self.field_refs:
+                errors.append(f"R4 表 {name} 未在语义层登记，疑似模型编造")
+                continue
+            # 指定字段不存在时给出最接近的候选，便于 fix 节点定向修正
+            if table.alias and "." in table.alias:
+                errors.append(f"R4 表别名不合法：{table.alias}")
+
+        # R7：显式 JOIN 必须带 ON / USING，不允许 CROSS JOIN
+        aliased = {t.alias.lower() for t in stmt.find_all(exp.Table) if t.alias}
+        for join in stmt.find_all(exp.Join):
+            kind = (join.side or "") + (join.kind or "")
+            on = join.args.get("on")
+            using = join.args.get("using")
+            if (join.kind or "").upper() == "CROSS":
+                join_errors.append("R7 不允许 CROSS JOIN，请补上连接条件")
+            elif on is None and not using:
+                join_errors.append("R7 JOIN 缺少 ON 条件，会产生笛卡尔积")
+                break
+
+        # 逗号分隔的多表 FROM 且没有任何 JOIN 时，要求 WHERE 中存在表间关联
+        # sqlglot 30.x 中 from_ 是单个 exp.From 节点，表清单挂在它的 expressions 上
+        from_node = stmt.args.get("from_")
+        from_tables: list[exp.Table] = []
+        if isinstance(from_node, exp.From):
+            from_tables = [t for t in from_node.expressions if isinstance(t, exp.Table)]
+        has_join = any(True for _ in stmt.find_all(exp.Join))
+        if len(from_tables) > 1 and not has_join:
+            where = stmt.args.get("where")
+            linked = False
+            if where is not None:
+                for eq in where.find_all(exp.EQ):
+                    sides = [
+                        c.table.lower()
+                        for c in (eq.left, eq.right)
+                        if isinstance(c, exp.Column) and c.table
+                    ]
+                    if len(set(sides)) >= 2:
+                        linked = True
+                        break
+            if not linked:
+                join_errors.append("R7 多表查询缺少连接条件，会产生笛卡尔积")
+
+        return tables, errors, join_errors
+
+    # —— R5 ——
+    def _check_columns(
+        self, stmt: exp.Expression, tables: set[str]
+    ) -> tuple[set[str], list[str]]:
+        errors: list[str] = []
+        columns: set[str] = set()
+
+        # 别名 → 真实表名。未登记的表在这里给 None，表示该作用域无法校验
+        alias_map: dict[str, str | None] = {}
+        for table in stmt.find_all(exp.Table):
+            real = (table.name or "").lower()
+            known = real if real in self.field_refs else None
+            alias_map[real] = known
+            if table.alias:
+                alias_map[table.alias.lower()] = known
+        # 子查询与 CTE 的作用域无法逐字段校验
+        for sub in stmt.find_all(exp.Subquery):
+            if sub.alias:
+                alias_map[sub.alias.lower()] = None
+        for cte in stmt.find_all(exp.CTE):
+            if cte.alias:
+                alias_map[cte.alias.lower()] = None
+
+        # 投影别名，供 GROUP BY / ORDER BY 引用（例如 ORDER BY 成交总额）
+        projection_aliases: set[str] = set()
+        for select in stmt.find_all(exp.Select):
+            for proj in select.expressions:
+                if proj.alias:
+                    projection_aliases.add(proj.alias.lower())
+
+        # 可校验的表集合，以及这些表的字段并集，用于无前缀字段的归属判断
+        known_tables = {t for t in tables if t in self.field_refs}
+        union_fields: set[str] = set()
+        for t in known_tables:
+            union_fields |= self.field_refs[t]
+
+        for col in stmt.find_all(exp.Column):
+            name = (col.name or "").lower()
+            qualifier = (col.table or "").lower()
+            if not name or name == "*":
+                continue
+
+            if qualifier:
+                if qualifier in alias_map:
+                    owner = alias_map[qualifier]
+                    if owner is None:
+                        continue  # 子查询 / CTE 内部字段，超出静态可见范围
+                    columns.add(f"{owner}.{name}")
+                    if name not in self.field_refs[owner]:
+                        errors.append(
+                            f"R5 字段 {qualifier}.{name} 在表 {owner} 中不存在"
+                            + self._suggest(name, owner)
+                        )
+                else:
+                    # 可能直接写了未注册的表名作前缀
+                    if qualifier in self.field_refs:
+                        columns.add(f"{qualifier}.{name}")
+                        if name not in self.field_refs[qualifier]:
+                            errors.append(
+                                f"R5 字段 {qualifier}.{name} 不存在"
+                                + self._suggest(name, qualifier)
+                            )
+                    else:
+                        errors.append(f"R5 引用了未知的表或别名 {qualifier}")
+            else:
+                if name in projection_aliases:
+                    continue
+                if not known_tables:
+                    continue
+                if name in union_fields:
+                    for t in known_tables:
+                        if name in self.field_refs[t]:
+                            columns.add(f"{t}.{name}")
+                            break
+                else:
+                    errors.append(
+                        f"R5 字段 {name} 未在任何被引用的表中登记"
+                        + self._suggest(name, None, union_fields)
+                    )
+
+        return columns, errors
+
+    @staticmethod
+    def _suggest(name: str, owner: str | None, pool: set[str] | None = None) -> str:
+        """给出形近字段提示。模型拼错字段名时，这条提示比原始报错更有用。"""
+        candidates = pool
+        if candidates is None and owner is not None:
+            candidates = set()
+        if not candidates:
+            return ""
+        close = [
+            c
+            for c in sorted(candidates)
+            if name[:3] == c[:3] or name in c or c in name
+        ][:3]
+        return f"，是否为 {'、'.join(close)}？" if close else ""
+
+    # —— R6 ——
+    def _enforce_limit(self, sql: str, stmt: exp.Expression) -> tuple[str, int | None]:
+        exist_limit = self._read_limit(stmt)
+        if exist_limit is not None and 0 < exist_limit <= self.max_rows:
+            return sql, None
+        # 用外层包裹而不是改写原语句的 LIMIT，避免依赖 sqlglot 的 AST 改写 API，
+        # 各版本行为一致，且保留原语句的 ORDER BY
+        body = strip_sql_fence(sql)
+        return (
+            f"SELECT * FROM (\n{body}\n) AS _guard_limited LIMIT {self.max_rows}",
+            self.max_rows,
+        )
+
+    @staticmethod
+    def _read_limit(stmt: exp.Expression) -> int | None:
+        limit = stmt.args.get("limit") if isinstance(stmt, exp.Expression) else None
+        node = limit
+        if node is None:
+            node = stmt.find(exp.Limit)
+        if node is None:
+            return None
+        # exp.Limit 在不同版本里计数存在 this 或 expression 上，两处都试
+        for key in ("expression", "this"):
+            value = node.args.get(key)
+            if isinstance(value, exp.Literal):
+                try:
+                    return int(value.this)
+                except (TypeError, ValueError):
+                    return None
+        return None
