@@ -33,7 +33,7 @@ from app.agent.nodes.route import route_node
 from app.agent.nodes.summarize import summarize_node
 from app.agent.nodes.validate import validate_node
 from app.agent.nodes.visualize import visualize_node
-from app.agent.state import AgentState, new_stage
+from app.agent.state import ENTRY_NODE, AgentState, new_stage
 from app.chart.builder import build_chart
 from app.db.guard import SqlGuard
 from app.db.repository import QueryRepository
@@ -177,7 +177,8 @@ def build_graph(
     graph.add_node("clarify", clarify_node)
     graph.add_node("give_up", give_up_node)
 
-    graph.set_entry_point("route")
+    # 入口节点名取自 state.ENTRY_NODE：进度归约靠它判断新一轮是否开始
+    graph.set_entry_point(ENTRY_NODE)
 
     graph.add_conditional_edges(
         "route",

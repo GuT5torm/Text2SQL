@@ -6,16 +6,20 @@
 有两处需要留意：
 
 1. messages 用 add_messages 归约，配合 Checkpointer 实现多轮记忆；
-2. stages 用 operator.add 归约，节点把进度事件追加进去，接入层据此推送 SSE。
-   事件只增不改，因此可以边执行边推送，不需要等整张图跑完。
+2. stages 用 merge_stages 归约，节点把进度事件追加进去，接入层据此推送 SSE。
+   事件只增不改，因此可以边执行边推送，不需要等整张图跑完。归约器没有直接用
+   operator.add，原因见 merge_stages 的注释——operator.add 会让进度跨轮累积。
 """
 
 from __future__ import annotations
 
-import operator
 from typing import Annotated, Any, Literal, TypedDict
 
 from langgraph.graph.message import add_messages
+
+# 图的入口节点名。图装配用它注册入口，进度归约用它判断新一轮是否开始，
+# 两处必须指向同一个节点，否则 stages 的跨轮重置会失效。
+ENTRY_NODE = "route"
 
 
 class StageEvent(TypedDict):
@@ -25,6 +29,22 @@ class StageEvent(TypedDict):
     label: str
     detail: str
     elapsed_ms: float
+
+
+def merge_stages(left: list[StageEvent], right: list[StageEvent]) -> list[StageEvent]:
+    """stages 的归约器：同一轮内追加，跨轮重置。
+
+    改用自定义函数而不是 operator.add，是因为 Checkpointer 会把上一轮的终态
+    一起保存下来，operator.add 的语义是「旧值加新值」，第二轮就会得到 14 条、
+    第三轮 21 条，前端进度条越跑越长，且终态里的 stages 混入了上一轮的内容。
+
+    判定依据是入口节点：route 每轮必定最先执行且只执行一次，它出现在 right 中
+    即代表新一轮开始，此时丢弃 left。同一轮内其余节点（包括 fix 回环后的
+    validate、execute）的事件不含 route，走正常的追加分支。
+    """
+    if any(s.get("node") == ENTRY_NODE for s in right):
+        return list(right)
+    return list(left) + list(right)
 
 
 def new_stage(node: str, label: str, detail: str = "", elapsed_ms: float = 0.0) -> StageEvent:
@@ -84,7 +104,7 @@ class AgentState(TypedDict, total=False):
     # —— 控制 ——
     status: Literal["ok", "clarify", "chitchat", "error"]
     error: str | None
-    stages: Annotated[list[StageEvent], operator.add]
+    stages: Annotated[list[StageEvent], merge_stages]
 
 
 def initial_state(session_id: str, question: str) -> AgentState:
@@ -107,5 +127,7 @@ def initial_state(session_id: str, question: str) -> AgentState:
         query_elapsed_ms=0.0,
         highlights=[],
         metric_used=[],
+        # 传空列表只是为了让字段存在。Checkpointer 里的上一轮内容会在 route
+        # 节点产出第一条事件时被 merge_stages 丢弃，不需要在这里手动清空
         stages=[],
     )
