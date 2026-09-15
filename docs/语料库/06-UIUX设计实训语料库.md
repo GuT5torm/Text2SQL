@@ -166,7 +166,7 @@ HistoryPage（历史会话）
 
 | 字段 | 用途 |
 |---|---|
-| `stages[]` | 阶段指示的数据源。每项含 `node` / `label` / `status`（`running` / `done` / `failed`）/ `duration_ms` / `detail`。作用域为单轮问答，不跨轮累积 |
+| `stages[]` | 阶段指示的数据源。每项含 `node` / `label` / `detail` / `elapsed_ms`（该节点耗时毫秒）。作用域为**单轮问答**，每轮重新累积，不跨轮叠加。运行态由前端按「是否为本轮最后一项且本轮未结束」推导，协议里没有 `status` 字段 |
 | `answer` / `insight` / `highlights` | 结论卡片 |
 | `metric_used` / `caveats` / `time_range` | 口径标签 |
 | `chart.chart_type` / `chart.option` | 图表渲染，图型由后端决定 |

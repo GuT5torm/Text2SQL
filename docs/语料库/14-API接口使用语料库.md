@@ -224,7 +224,7 @@ curl -s http://127.0.0.1:8000/api/chat/sync \
 | `guard` | object \| null | 被守卫拦截时的规则编号与原因，含 rule_id、reason |
 | `status` | string | `ok` / `clarify` / `chitchat` / `error` |
 | `error` | string \| null | 失败时的原因 |
-| `stages` | array | 本轮经过的节点，含 node、label、status、duration_ms、detail |
+| `stages` | array | 本轮经过的节点，每项含 node、label、detail、elapsed_ms（该节点耗时毫秒）。作用域为单轮问答，下一轮重新累积；协议里没有 status 字段，运行态由前端自行推导 |
 | `query_elapsed_ms` | float | SQL 执行耗时 |
 | `attempts` | int | 生成尝试次数 |
 
