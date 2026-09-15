@@ -5,10 +5,12 @@
 # Windows PowerShell 下直接跑 uvicorn 即可，等价命令见 README 第三步。
 #
 # 用法：
+# USAGE_BEGIN
 #   ./deploy/start.sh start     启动服务
 #   ./deploy/start.sh stop      停止服务
 #   ./deploy/start.sh restart   重启（修改 .env 后使用）
 #   ./deploy/start.sh status    查看进程状态
+# USAGE_END
 #
 # 为什么默认只起 1 个 worker：
 #   会话记忆默认用 MemorySaver，图状态保存在进程内存中。起多个 worker 时，
@@ -38,14 +40,30 @@ else
 fi
 
 usage() {
-    sed -n '3,11p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+    # 按标记区间抽取而不是写死行号：头部注释增删一行帮助信息就错位
+    awk '/^# USAGE_BEGIN$/{flag=1;next} /^# USAGE_END$/{flag=0} flag {sub(/^# ?/, ""); print}' \
+        "${BASH_SOURCE[0]}"
 }
 
 is_running() {
     [[ -f "$PID_FILE" ]] || return 1
     local pid
     pid="$(cat "$PID_FILE")"
-    [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null
+    [[ -n "$pid" ]] || return 1
+    # 只看 kill -0 不够：进程被强杀后 PID 文件残留，且 PID 会被系统复用给别的
+    # 进程，会误报「已在运行」。再比对一次命令行，确认这个 PID 确实是本服务。
+    if [[ -r "/proc/$pid/cmdline" ]]; then
+        tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null | grep -q "app.main:app" || return 1
+    fi
+    kill -0 "$pid" 2>/dev/null
+}
+
+port_in_use() {
+    # 启动前预检端口占用。不做预检的话，端口被别的进程占着时启动会失败，
+    # 而失败信息藏在日志里，不如在这里直接说清楚
+    command -v ss >/dev/null 2>&1 || return 1
+    ss -ltn 2>/dev/null | grep -qE "[:.]${PORT}[[:space:]]" || return 1
+    return 0
 }
 
 ensure_ready() {
@@ -62,6 +80,10 @@ do_start() {
     fi
     if [[ ! -f "$BACKEND_DIR/data/ecommerce.db" ]]; then
         echo "未找到样例数据库，先造数：$PYTHON data/seed.py" >&2
+        exit 1
+    fi
+    if port_in_use; then
+        echo "端口 $PORT 已被占用。先停掉占用进程，或用 PORT=8001 $0 start 换个端口" >&2
         exit 1
     fi
 
