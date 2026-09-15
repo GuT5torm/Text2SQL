@@ -67,8 +67,30 @@ C:\Text2SQL\
 
 `stages` 字段跨轮累积：状态归约使用 `operator.add`，Checkpointer 保存上一轮内容，导致第二轮显示 14 个阶段、第三轮 21 个。文档侧已统一口径——`stages` 的作用域是单轮，跨轮累积属于缺陷，修复方案为「按逐节点更新采集，不从终态整体取，前端发起新一轮时先清空」。代码未改。
 
-仓库中尚缺 `backend/requirements.txt`、`backend/.env.example`、`backend/eval/cases.yaml`，`frontend/` 与 `deploy/` 为空目录。相关文档的验证步骤已改为标注待建并给出替代方式，文件需按实训步骤生成。
+历史会话落库失效：`api/chat.py` 构造 `TurnRecord` 时未提供 `id`，而该字段无默认值，异常被持久化函数的裸 `except` 吞掉，接口仍返回成功。P2 修复。
+
+`smoke.py:68` 读取 `chart["type"]`，实际字段为 `chart_type`，打印恒为 `None`。脚本自身的字段名错误，不影响链路。P2 修复。
+
+## P1 工程底座与 P6 部署配置（已完成）
+
+按「先出方案再执行」的约定，开发分七个部分推进，每部分独立验收。已完成第一部分与第六部分，共六次提交。
+
+| 提交 | 内容 | 验证 |
+|---|---|---|
+| P1-T1 | `.gitignore`、仓库初始化、清理调试产物 | 96 个文件纳管，密钥与数据库未入库 |
+| P1-T2 | `requirements.txt`（14 个顶层包，版本写死）、`.env.example`（21 个配置项） | `pip install --dry-run` 无冲突 |
+| P1-T3 | `backend/README.md` 三步启动文档 | `seed.py --keep` 与 `pytest` 行为与文档一致 |
+| P1-T5 | 既有代码与文档纳管，作为修复基线 | `git ls-files` 96 个，工作区干净 |
+| P6-T4 | `deploy/nginx.conf`、`deploy/start.sh` | `start.sh` 起停全流程实测通过 |
+
+实测结论：`/api/health` 返回 `llm_mock=true`、`metrics=7`、`tables=6`，与 README 示例逐字一致；`start.sh start` 起服务后探针在 15 秒内响应，`stop` 后无残留进程。
+
+未实测项：`deploy/nginx.conf` 只做了括号与指令结尾的静态检查，本机无 nginx，未跑 `nginx -t`。
 
 ## 当前状态
 
-骨架代码可编译、端到端链路可跑通（`/api/chat/sync` 在桩实现下返回完整结果）。文档全部交付完成。`.pptx` 尚未生成，需先补齐 P9 截图与 P10 实测数值。
+骨架代码可编译、端到端链路可跑通（`/api/chat/sync` 在桩实现下返回完整结果）。文档全部交付完成，工程底座与部署配置就位，仓库已纳管全部源码与文档并按任务粒度提交。
+
+LLM 接入按用户确认为桩模式，未配置真实密钥，因此 PPT 的 P9 截图仍处于「未取得 `llm_mock=false` 的真实运行记录」状态，P10 的数值同样待评测后再填。
+
+待推进：P2 修复三处缺陷（`stages` 跨轮累积、历史会话落库、`smoke.py` 字段名），P3 单元测试，P4 前端工程，P5 评测基线，P7 交付收尾。
