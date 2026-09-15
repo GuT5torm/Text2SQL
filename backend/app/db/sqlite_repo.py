@@ -216,6 +216,8 @@ class SqliteSessionStore(SessionStore):
                     sess.title = turn.question[:40]
                 sess.updated_at = dt.datetime.now()
             s.commit()
+            # 回填自增主键，让调用方拿到的是已经落库的记录而不是半截对象
+            turn.id = obj.id
             return obj.id
 
     def list_turns(self, session_id: str) -> list[TurnRecord]:

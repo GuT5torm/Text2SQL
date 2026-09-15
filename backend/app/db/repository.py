@@ -67,7 +67,13 @@ class SessionRecord:
 
 @dataclass
 class TurnRecord:
-    id: int
+    """一轮问答记录。
+
+    id 排在最后且带默认值，是因为它有两个方向：写入时还没有主键，由数据库自增
+    生成后由 add_turn 回填；读取时由 list_turns 填好。放在前面会让所有字段
+    被迫给出默认值，反而掩盖了 session_id 与 question 是必填这一事实。
+    """
+
     session_id: str
     question: str
     answer: str = ""
@@ -80,6 +86,7 @@ class TurnRecord:
     status: str = "ok"
     error: str | None = None
     created_at: dt.datetime | None = None
+    id: int = 0  # 0 表示尚未落库，add_turn 提交后回填自增主键
 
 
 class SessionStore(ABC):
