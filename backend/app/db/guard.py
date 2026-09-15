@@ -71,6 +71,50 @@ ALLOWED_DB_PREFIX = {"", "main"}
 
 _FENCE_RE = re.compile(r"^\s*```(?:sql)?\s*|\s*```\s*$", re.IGNORECASE)
 
+# 恒真条件节点。sqlglot 读 sqlite 方言时会给缺 ON 的 JOIN 补一个 TRUE，
+# 节点名写成字符串是为了兼容各版本的命名差异（Boolean / True_）
+_TRUE_NODE_NAMES = ("Boolean", "True_")
+
+
+def _alias_to_real(stmt: exp.Expression) -> dict[str, str]:
+    """表别名 → 真实表名。用于把 WHERE 里的限定符还原成表名再比对。"""
+    mapping: dict[str, str] = {}
+    for table in stmt.find_all(exp.Table):
+        real = (table.name or "").lower()
+        if real:
+            mapping.setdefault(real, real)
+        if table.alias:
+            mapping[table.alias.lower()] = real
+    return mapping
+
+
+def _linked_pairs(stmt: exp.Expression, alias_to_real: dict[str, str]) -> set[frozenset[str]]:
+    """WHERE 中形如 a.x = b.y 的等值关联涉及的表对。"""
+    where = stmt.args.get("where")
+    pairs: set[frozenset[str]] = set()
+    if where is None:
+        return pairs
+    for eq in where.find_all(exp.EQ):
+        sides: set[str] = set()
+        for col in (eq.left, eq.right):
+            if isinstance(col, exp.Column) and col.table:
+                key = col.table.lower()
+                sides.add(alias_to_real.get(key, key))
+        if len(sides) == 2:
+            pairs.add(frozenset(sides))
+    return pairs
+
+
+def _has_join_condition(join: exp.Join) -> bool:
+    if join.args.get("using"):
+        return True
+    on = join.args.get("on")
+    if on is None:
+        return False
+    if type(on).__name__ in _TRUE_NODE_NAMES and getattr(on, "this", True):
+        return False  # ON TRUE 等同于没写条件
+    return True
+
 
 def strip_sql_fence(text: str) -> str:
     """去掉模型习惯性加上的 Markdown 代码围栏与结尾分号。"""
@@ -221,42 +265,38 @@ class SqlGuard:
             if table.alias and "." in table.alias:
                 errors.append(f"R4 表别名不合法：{table.alias}")
 
-        # R7：显式 JOIN 必须带 ON / USING，不允许 CROSS JOIN
-        aliased = {t.alias.lower() for t in stmt.find_all(exp.Table) if t.alias}
-        for join in stmt.find_all(exp.Join):
-            kind = (join.side or "") + (join.kind or "")
-            on = join.args.get("on")
-            using = join.args.get("using")
-            if (join.kind or "").upper() == "CROSS":
-                join_errors.append("R7 不允许 CROSS JOIN，请补上连接条件")
-            elif on is None and not using:
-                join_errors.append("R7 JOIN 缺少 ON 条件，会产生笛卡尔积")
-                break
-
-        # 逗号分隔的多表 FROM 且没有任何 JOIN 时，要求 WHERE 中存在表间关联
-        # sqlglot 30.x 中 from_ 是单个 exp.From 节点，表清单挂在它的 expressions 上
-        from_node = stmt.args.get("from_")
-        from_tables: list[exp.Table] = []
-        if isinstance(from_node, exp.From):
-            from_tables = [t for t in from_node.expressions if isinstance(t, exp.Table)]
-        has_join = any(True for _ in stmt.find_all(exp.Join))
-        if len(from_tables) > 1 and not has_join:
-            where = stmt.args.get("where")
-            linked = False
-            if where is not None:
-                for eq in where.find_all(exp.EQ):
-                    sides = [
-                        c.table.lower()
-                        for c in (eq.left, eq.right)
-                        if isinstance(c, exp.Column) and c.table
-                    ]
-                    if len(set(sides)) >= 2:
-                        linked = True
-                        break
-            if not linked:
-                join_errors.append("R7 多表查询缺少连接条件，会产生笛卡尔积")
+        join_errors.extend(self._check_joins(stmt, tables))
 
         return tables, errors, join_errors
+
+    # —— R7 ——
+    def _check_joins(self, stmt: exp.Expression, tables: set[str]) -> list[str]:
+        """多表查询必须把表连起来，不能放任笛卡尔积。
+
+        两种写法的判定方式不同：
+
+          JOIN ... ON    条件写在 JOIN 上，只看 on / using 是否存在。
+                         这里不能只判 on is None —— sqlglot 读 sqlite 方言时
+                         会把「JOIN 后忘了写 ON」补成 ON TRUE，判空会漏掉。
+          逗号连接        sqlglot 会归成 CROSS JOIN，但 FROM a, b WHERE a.x = b.y
+                         是合法写法，一律拒绝会误伤，因此改看 WHERE 里的等值关联
+                         是否覆盖了足够多的表对。
+        """
+        errors: list[str] = []
+        alias_to_real = _alias_to_real(stmt)
+        pairs = _linked_pairs(stmt, alias_to_real)
+
+        for join in stmt.find_all(exp.Join):
+            if (join.kind or "").upper() == "CROSS":
+                # 至少要有 表数-1 条互不相同的表间关联，否则必有表是自由连接的
+                needed = max(len(tables) - 1, 1)
+                if len(pairs) < needed:
+                    errors.append("R7 多表查询缺少连接条件，会产生笛卡尔积")
+                break
+            if not _has_join_condition(join):
+                errors.append("R7 JOIN 缺少 ON 条件，会产生笛卡尔积")
+                break
+        return errors
 
     # —— R5 ——
     def _check_columns(
