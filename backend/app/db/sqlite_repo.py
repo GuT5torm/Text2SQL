@@ -54,11 +54,23 @@ class SqliteQueryRepository(QueryRepository):
         # 累计执行的指令数，用于扫描量上限的兜底
         counter = {"instructions": 0}
 
+        # 中断原因要区分开：超时与扫描量超标的重试策略不同，
+        # 笼统报「超时」会让 fix 节点往错误的方向改
+        state = {"reason": ""}
+
         def _progress() -> int:
             counter["instructions"] += _PROGRESS_INTERVAL
             if time.monotonic() > deadline:
+                state["reason"] = (
+                    f"查询超过 {settings.sql_timeout_seconds:g} 秒被中断。"
+                    "请简化查询范围或缩小时间区间后重试。"
+                )
                 return 1
             if counter["instructions"] > settings.sql_scan_limit:
+                state["reason"] = (
+                    f"查询扫描量超过上限（{settings.sql_scan_limit} 条指令）被中断。"
+                    "请缩小时间区间或减少关联表后重试。"
+                )
                 return 1
             return 0
 
@@ -76,8 +88,7 @@ class SqliteQueryRepository(QueryRepository):
                 message = str(exc)
                 if "interrupted" in message.lower():
                     raise QueryTimeout(
-                        f"查询超过 {settings.sql_timeout_seconds:g} 秒被中断。"
-                        "请简化查询范围或缩小时间区间后重试。"
+                        state["reason"] or f"查询被中断：{message}"
                     ) from exc
                 raise QueryError(f"SQLite 执行失败：{message}") from exc
             finally:
