@@ -1,7 +1,11 @@
 """validate 节点：调用 SQL 守卫做安全校验。
 
-守卫的八条规则集中在 db/guard.py，本节点只做两件事：把结果翻译成状态更新、
-在校验失败时递增重试计数。把校验逻辑留在守卫里，是为了让它能脱离编排层单独单测。
+守卫的九条规则集中在 db/guard.py，本节点只做两件事：把结果翻译成状态更新、
+在校验失败时把报错记进修正历史。把校验逻辑留在守卫里，是为了让它能脱离编排层单
+独单测。
+
+重试计数由 fix 节点递增：retry_count 的语义是「已经修正了几次」，计在产生修正的
+那一侧才不会出现「配置写 3、提示语写 4」这类差一错误。
 """
 
 from __future__ import annotations
@@ -52,7 +56,6 @@ def _fail(state: AgentState, error: str, started: float, label: str) -> dict[str
     history.append({"stage": "validate", "sql": (state.get("sql") or "")[:2000], "error": error})
     return {
         "sql_error": error,
-        "retry_count": int(state.get("retry_count") or 0) + 1,
         "fix_history": history,
         "stages": [new_stage(NODE, "安全校验", f"{label}：{error[:80]}", _ms(started))],
     }

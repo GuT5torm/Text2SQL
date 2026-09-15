@@ -9,8 +9,11 @@
                                               execute ─┬─ 成功 ─► visualize ─► summarize ─► END
                                                        └─ 失败 ─► fix ──────┘（回 validate）
 
-retry_count 在 validate 与 execute 之间共享，上限取自配置。达到上限后进入
-give_up，返回包含最后一次语句与报错的可读说明，而不是无限循环消耗 token。
+retry_count 在 validate 与 execute 之间共享，由 fix 节点递增，上限取自配置
+（sql_max_retry）。它的语义是「已经修正了几次」，因此计在产生修正的那一侧；
+放在失败侧递增会出现「配置写 3、放弃提示语写 4」这类差一错误。
+达到上限后进入 give_up，返回包含最后一次语句与报错的可读说明，而不是无限循环
+消耗 token。
 
 依赖全部通过关键字参数注入到节点，图本身不创建任何对象。这样同一张图可以用
 真实网关跑，也可以用桩实现或测试替身跑，图定义不需要分叉。
@@ -138,13 +141,13 @@ def _after_generate(state: AgentState) -> str:
 def _after_validate(state: AgentState, max_retry: int) -> str:
     if not state.get("sql_error"):
         return "execute"
-    return "fix" if int(state.get("retry_count") or 0) <= max_retry else "give_up"
+    return "fix" if int(state.get("retry_count") or 0) < max_retry else "give_up"
 
 
 def _after_execute(state: AgentState, max_retry: int) -> str:
     if not state.get("sql_error"):
         return "visualize"
-    return "fix" if int(state.get("retry_count") or 0) <= max_retry else "give_up"
+    return "fix" if int(state.get("retry_count") or 0) < max_retry else "give_up"
 
 
 # ----------------------------------------------------------------------

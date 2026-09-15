@@ -55,7 +55,6 @@ def _fail(state: AgentState, error: str, started: float) -> dict[str, Any]:
     history.append({"stage": "execute", "sql": (state.get("sql") or "")[:2000], "error": error})
     return {
         "sql_error": error,
-        "retry_count": int(state.get("retry_count") or 0) + 1,
         "fix_history": history,
         "stages": [new_stage(NODE, "执行查询", f"执行失败：{error[:80]}", _ms(started))],
     }
