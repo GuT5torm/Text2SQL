@@ -1,0 +1,110 @@
+<Slide style={{ background: '#FFFFFF', padding: '32px 56px 24px 56px' }}>
+        <Box style={{ height: 84, flexDirection: 'row', alignItems: 'center', gap: 16 }}>
+        <Box style={{ width: 6, height: 44, background: '#3B82F6' }} />
+        <Text style={{ fontSize: 34, fontWeight: 'bold', color: '#0F172A', fontFamily: '微软雅黑' }}>
+            口径写在配置里，不在模型的猜测里
+        </Text>
+    </Box>
+
+        <Box style={{ height: 548, flexDirection: 'row', gap: 32 }}>
+                <Box style={{ width: 330, flexDirection: 'column' }}>
+            <Text style={{ fontSize: 22, fontWeight: 'bold', color: '#0F172A', fontFamily: '微软雅黑' }}>
+                三份配置，一份语义层
+            </Text>
+            <Box style={{ height: 14 }} />
+            {[
+                ['metrics.yaml', '7 个指标', '聚合表达式、必带过滤条件、适用维度、边界说明与示例 SQL'],
+                ['tables.yaml', '6 张业务表', '字段级元数据、枚举取值、维度同义词与时间词映射'],
+                ['synonyms.yaml', '27 条 + 22 个', '取值同义与相对时间词，负责把口语拉回维度'],
+            ].map((row, i) => (
+                <Box key={i} style={{
+                    background: 'rgba(59,130,246,0.08)',
+                    borderLeft: '4px solid #3B82F6',
+                    borderRadius: 6,
+                    padding: '16px 16px',
+                    marginBottom: 12,
+                    flexDirection: 'column', gap: 6,
+                }}>
+                    <Box style={{ flexDirection: 'row', alignItems: 'baseline', gap: 10 }}>
+                        <Text style={{ fontSize: 17, fontWeight: 'bold', color: '#3B82F6', fontFamily: 'Consolas' }}>
+                            {row[0]}
+                        </Text>
+                        <Text style={{ fontSize: 14, color: 'rgba(15,23,42,0.66)', fontFamily: '微软雅黑' }}>
+                            {row[1]}
+                        </Text>
+                    </Box>
+                    <Text style={{ fontSize: 14, color: '#0F172A', lineHeight: 1.5, fontFamily: '微软雅黑' }}>
+                        {row[2]}
+                    </Text>
+                </Box>
+            ))}
+            <Box style={{ height: 12 }} />
+            <Box style={{ background: 'rgba(6,182,212,0.10)', borderRadius: 8, padding: '16px 18px' }}>
+                <Text style={{ fontSize: 14, color: '#0F172A', lineHeight: 1.55, fontFamily: '微软雅黑' }}>
+                    进程启动时校验配置与库内实际表的一致性，不一致直接拒绝启动，不等到提问时才暴露。
+                </Text>
+            </Box>
+        </Box>
+
+                <Box style={{ width: 806, flexDirection: 'column' }}>
+            <Text style={{ fontSize: 22, fontWeight: 'bold', color: '#0F172A', fontFamily: '微软雅黑' }}>
+                一条口径配置里写了什么：以成交总额为例
+            </Text>
+            <Box style={{ height: 14 }} />
+            <Table
+                style={{ width: '100%', height: 400 }}
+                defaultTextStyle={{ fontSize: 15, textAlign: 'left', fontFamily: '微软雅黑', color: '#0F172A' }}
+                defaultCellStyle={{
+                    padding: 12,
+                    border: {
+                        left: { width: 1, color: 'rgba(15,23,42,0.12)' },
+                        right: { width: 1, color: 'rgba(15,23,42,0.12)' },
+                        top: { width: 1, color: 'rgba(15,23,42,0.12)' },
+                        bottom: { width: 1, color: 'rgba(15,23,42,0.12)' },
+                    },
+                }}
+                cells={[
+                    [
+                        { text: '配置项', textStyle: { bold: true, color: '#FFFFFF', fontSize: 16 }, cellStyle: { background: { color: '#06B6D4' } } },
+                        { text: '内容', textStyle: { bold: true, color: '#FFFFFF', fontSize: 16 }, cellStyle: { background: { color: '#06B6D4' } } },
+                    ],
+                    [
+                        { text: '聚合表达式', textStyle: { bold: true } },
+                        { text: 'SUM(oi.quantity * oi.unit_price)', textStyle: { fontFamily: 'Consolas' } },
+                    ],
+                    [
+                        { text: '必带过滤', textStyle: { bold: true }, cellStyle: { background: { color: 'rgba(15,23,42,0.04)' } } },
+                        { text: "orders.status NOT IN ('cancelled', 'pending')", textStyle: { fontFamily: 'Consolas' }, cellStyle: { background: { color: 'rgba(15,23,42,0.04)' } } },
+                    ],
+                    [
+                        { text: '排除范围', textStyle: { bold: true } },
+                        '不含已取消与未支付订单；不扣退款，退款影响另看退款率',
+                    ],
+                    [
+                        { text: '关联关系', textStyle: { bold: true }, cellStyle: { background: { color: 'rgba(15,23,42,0.04)' } } },
+                        { text: 'order_items.order_id = orders.id', textStyle: { fontFamily: 'Consolas' }, cellStyle: { background: { color: 'rgba(15,23,42,0.04)' } } },
+                    ],
+                    [
+                        { text: '适用维度', textStyle: { bold: true } },
+                        '日期 / 月份 / 季度 / 区域 / 渠道 / 品类 / 品牌 / 会员等级',
+                    ],
+                    [
+                        { text: '消费方', textStyle: { bold: true }, cellStyle: { background: { color: 'rgba(15,23,42,0.04)' } } },
+                        { text: '提示词构造、守卫字段白名单、前端口径标注', cellStyle: { background: { color: 'rgba(15,23,42,0.04)' } } },
+                    ],
+                ]}
+            />
+            <Box style={{ height: 16 }} />
+            <Text style={{ fontSize: 16, color: 'rgba(15,23,42,0.72)', lineHeight: 1.55, fontFamily: '微软雅黑' }}>
+                同一份元数据三处复用：改口径只改 YAML，提示词、守卫与前端标注同步生效。
+            </Text>
+        </Box>
+    </Box>
+
+        <Box style={{ height: 32, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+        <Text style={{ fontSize: 14, color: 'rgba(15,23,42,0.60)', fontFamily: '微软雅黑' }}>
+            Text2SQL 电商数据分析 Agent
+        </Text>
+        <Text style={{ fontSize: 14, color: 'rgba(15,23,42,0.60)', fontFamily: '微软雅黑' }}>06 / 12</Text>
+    </Box>
+</Slide>

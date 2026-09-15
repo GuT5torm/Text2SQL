@@ -1,0 +1,119 @@
+<Slide style={{ background: '#FFFFFF', padding: '32px 56px 24px 56px' }}>
+        <Box style={{ height: 84, flexDirection: 'row', alignItems: 'center', gap: 16 }}>
+        <Box style={{ width: 6, height: 44, background: '#3B82F6' }} />
+        <Text style={{ fontSize: 34, fontWeight: 'bold', color: '#0F172A', fontFamily: '微软雅黑' }}>
+            每个选择都有对应的约束
+        </Text>
+    </Box>
+
+        <Box style={{ height: 548, flexDirection: 'row', gap: 32 }}>
+                <Box style={{ width: 330, flexDirection: 'column' }}>
+            <Text style={{ fontSize: 22, fontWeight: 'bold', color: '#0F172A', fontFamily: '微软雅黑' }}>
+                选型不是偏好，是约束的结果
+            </Text>
+            <Box style={{ height: 14 }} />
+            <Text style={{ fontSize: 15, color: 'rgba(15,23,42,0.76)', lineHeight: 1.6, fontFamily: '微软雅黑' }}>
+                右侧七项逐条给出约束来源。判断标准只有三个：当前规模是否需要、出问题能否定位、将来能否替换。
+            </Text>
+            <Box style={{ height: 18 }} />
+            {[
+                ['规模匹配', '不为演示数据量级引入分布式组件'],
+                ['可维护性', '分层硬约束能靠目录结构直接检查'],
+                ['可替换性', '网关与仓储都是接口，实现可换'],
+            ].map((row, i) => (
+                <Box key={i} style={{
+                    background: 'rgba(59,130,246,0.08)', borderRadius: 6,
+                    padding: '14px 16px', marginBottom: 12, flexDirection: 'column', gap: 5,
+                }}>
+                    <Text style={{ fontSize: 16, fontWeight: 'bold', color: '#3B82F6', fontFamily: '微软雅黑' }}>
+                        {row[0]}
+                    </Text>
+                    <Text style={{ fontSize: 14, color: '#0F172A', lineHeight: 1.5, fontFamily: '微软雅黑' }}>
+                        {row[1]}
+                    </Text>
+                </Box>
+            ))}
+        </Box>
+
+                <Box style={{ width: 806, flexDirection: 'column' }}>
+            <Table
+                style={{ width: '100%', height: 430 }}
+                defaultTextStyle={{ fontSize: 14, textAlign: 'left', fontFamily: '微软雅黑', color: '#0F172A' }}
+                defaultCellStyle={{
+                    padding: 10,
+                    border: {
+                        left: { width: 1, color: 'rgba(15,23,42,0.12)' },
+                        right: { width: 1, color: 'rgba(15,23,42,0.12)' },
+                        top: { width: 1, color: 'rgba(15,23,42,0.12)' },
+                        bottom: { width: 1, color: 'rgba(15,23,42,0.12)' },
+                    },
+                }}
+                cells={[
+                    [
+                        { text: '环节', textStyle: { bold: true, color: '#FFFFFF', fontSize: 15 }, cellStyle: { background: { color: '#06B6D4' } } },
+                        { text: '选择', textStyle: { bold: true, color: '#FFFFFF', fontSize: 15 }, cellStyle: { background: { color: '#06B6D4' } } },
+                        { text: '约束来源', textStyle: { bold: true, color: '#FFFFFF', fontSize: 15 }, cellStyle: { background: { color: '#06B6D4' } } },
+                    ],
+                    [
+                        { text: '运行时', textStyle: { bold: true } },
+                        'Python 3.13 / FastAPI',
+                        '单进程即可跑通，接口与编排图同进程，不上容器',
+                    ],
+                    [
+                        { text: '编排', textStyle: { bold: true }, cellStyle: { background: { color: 'rgba(15,23,42,0.04)' } } },
+                        { text: 'LangGraph', textStyle: { fontFamily: 'Consolas' }, cellStyle: { background: { color: 'rgba(15,23,42,0.04)' } } },
+                        { text: '需要显式的重试回环与可中断状态', cellStyle: { background: { color: 'rgba(15,23,42,0.04)' } } },
+                    ],
+                    [
+                        { text: '存储', textStyle: { bold: true } },
+                        'sqlite3 + SQLAlchemy',
+                        '演示数据量级小；仓储层抽象留出换库余地',
+                    ],
+                    [
+                        { text: 'SQL 解析', textStyle: { bold: true }, cellStyle: { background: { color: 'rgba(15,23,42,0.04)' } } },
+                        { text: 'sqlglot', textStyle: { fontFamily: 'Consolas' }, cellStyle: { background: { color: 'rgba(15,23,42,0.04)' } } },
+                        { text: '守卫要在语法树层判定，正则分不出字面量与关键字', cellStyle: { background: { color: 'rgba(15,23,42,0.04)' } } },
+                    ],
+                    [
+                        { text: '图表', textStyle: { bold: true } },
+                        'ECharts',
+                        '图表配置在后端构造并校验，前端只做渲染',
+                    ],
+                    [
+                        { text: '配置', textStyle: { bold: true }, cellStyle: { background: { color: 'rgba(15,23,42,0.04)' } } },
+                        { text: 'Pydantic Settings', textStyle: { fontFamily: 'Consolas' }, cellStyle: { background: { color: 'rgba(15,23,42,0.04)' } } },
+                        { text: '配置集中声明并做类型校验，缺项在启动时暴露', cellStyle: { background: { color: 'rgba(15,23,42,0.04)' } } },
+                    ],
+                    [
+                        { text: '模型接入', textStyle: { bold: true } },
+                        'OpenAI 兼容网关',
+                        '网关层抽象，桩实现与真实实现同签名',
+                    ],
+                ]}
+            />
+            <Box style={{ height: 16 }} />
+            <Box style={{
+                background: 'rgba(15,23,42,0.04)', borderRadius: 6,
+                border: '1px solid rgba(15,23,42,0.12)',
+                padding: '14px 16px', flexDirection: 'column', gap: 6,
+            }}>
+                <Text style={{ fontSize: 13, color: 'rgba(15,23,42,0.62)', fontFamily: '微软雅黑' }}>
+                    实测版本号（取自本机 backend/.venv）
+                </Text>
+                <Text style={{ fontSize: 14, color: '#0F172A', fontFamily: 'Consolas' }}>
+                    fastapi 0.141.1 · uvicorn 0.52.4 · langgraph 1.2.11 · langchain-core 1.6.3
+                </Text>
+                <Text style={{ fontSize: 14, color: '#0F172A', fontFamily: 'Consolas' }}>
+                    sqlalchemy 2.0.52 · sqlglot 30.18.0 · pydantic 2.13.5 · pydantic-settings 2.15.0 · openai 3.13.0
+                </Text>
+            </Box>
+        </Box>
+    </Box>
+
+        <Box style={{ height: 32, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+        <Text style={{ fontSize: 14, color: 'rgba(15,23,42,0.60)', fontFamily: '微软雅黑' }}>
+            Text2SQL 电商数据分析 Agent
+        </Text>
+        <Text style={{ fontSize: 14, color: 'rgba(15,23,42,0.60)', fontFamily: '微软雅黑' }}>08 / 12</Text>
+    </Box>
+</Slide>

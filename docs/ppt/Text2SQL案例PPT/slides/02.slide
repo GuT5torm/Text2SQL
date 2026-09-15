@@ -1,0 +1,92 @@
+<Slide style={{ background: '#FFFFFF', padding: '32px 56px 24px 56px' }}>
+        <Box style={{ height: 84, flexDirection: 'row', alignItems: 'center', gap: 16 }}>
+        <Box style={{ width: 6, height: 44, background: '#3B82F6' }} />
+        <Text style={{ fontSize: 34, fontWeight: 'bold', color: '#0F172A', fontFamily: '微软雅黑' }}>
+            业务要一个数，要等多久
+        </Text>
+    </Box>
+
+        <Box style={{ height: 548, flexDirection: 'row', gap: 32 }}>
+                <Box style={{ width: 688, flexDirection: 'column' }}>
+            <Text style={{ fontSize: 22, fontWeight: 'bold', color: '#0F172A', fontFamily: '微软雅黑' }}>
+                一次业务取数的实际路径
+            </Text>
+            <Box style={{ height: 14 }} />
+            {[
+                ['1', '业务提出需求', '一句话描述要什么数，通常不带口径'],
+                ['2', '数据同学排期', '需求进入队列，交付时间取决于人力'],
+                ['3', '来回确认口径', '“销量”是订单数还是商品件数，靠口头对齐'],
+                ['4', '写 SQL 取数', '同类逻辑反复重写，上次的结果无法复用'],
+                ['5', '交付表格', '结果离开上下文，下次还要再问一遍'],
+            ].map((row, i) => (
+                <Box key={i} style={{ flexDirection: 'row', alignItems: 'center', gap: 16, height: 64 }}>
+                    <Box style={{
+                        width: 40, height: 40, borderRadius: 8,
+                        background: i === 0 ? '#3B82F6' : 'rgba(59,130,246,0.12)',
+                        alignItems: 'center', justifyContent: 'center',
+                    }}>
+                        <Text style={{
+                            fontSize: 18, fontWeight: 'bold',
+                            color: i === 0 ? '#FFFFFF' : '#3B82F6',
+                            fontFamily: 'Consolas',
+                        }}>{row[0]}</Text>
+                    </Box>
+                    <Box style={{ flexDirection: 'column', gap: 3 }}>
+                        <Text style={{ fontSize: 19, fontWeight: 'bold', color: '#0F172A', fontFamily: '微软雅黑' }}>
+                            {row[1]}
+                        </Text>
+                        <Text style={{ fontSize: 15, color: 'rgba(15,23,42,0.66)', fontFamily: '微软雅黑' }}>
+                            {row[2]}
+                        </Text>
+                    </Box>
+                </Box>
+            ))}
+            <Box style={{ height: 18 }} />
+            <Box style={{
+                background: 'rgba(6,182,212,0.10)',
+                borderLeft: '4px solid #06B6D4',
+                padding: '14px 18px',
+                borderRadius: 6,
+            }}>
+                <Text style={{ fontSize: 16, color: '#0F172A', lineHeight: 1.5, fontFamily: '微软雅黑' }}>
+                    三步损耗落在等待、口径与复用上，交付周期由此被人为拉长。
+                </Text>
+            </Box>
+        </Box>
+
+                <Box style={{ width: 448, flexDirection: 'column' }}>
+            <Text style={{ fontSize: 22, fontWeight: 'bold', color: '#0F172A', fontFamily: '微软雅黑' }}>
+                损耗集中在三处
+            </Text>
+            <Box style={{ height: 14 }} />
+            {[
+                ['等待', '需求排队，交付周期由人力决定；问题越急，等待成本越高。'],
+                ['口径歧义', '同一个业务词在不同人手里对应不同的 SQL，结果对不上又难以定位。'],
+                ['重复劳动', '相似需求每次从头对齐一遍，口径没有沉淀成可复用的资产。'],
+            ].map((row, i) => (
+                <Box key={i} style={{
+                    background: 'rgba(59,130,246,0.08)',
+                    borderRadius: 8,
+                    padding: '20px 20px',
+                    marginBottom: 14,
+                    flexDirection: 'column',
+                    gap: 8,
+                }}>
+                    <Text style={{ fontSize: 19, fontWeight: 'bold', color: '#3B82F6', fontFamily: '微软雅黑' }}>
+                        {row[0]}
+                    </Text>
+                    <Text style={{ fontSize: 15, color: '#0F172A', lineHeight: 1.5, fontFamily: '微软雅黑' }}>
+                        {row[1]}
+                    </Text>
+                </Box>
+            ))}
+        </Box>
+    </Box>
+
+        <Box style={{ height: 32, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+        <Text style={{ fontSize: 14, color: 'rgba(15,23,42,0.60)', fontFamily: '微软雅黑' }}>
+            Text2SQL 电商数据分析 Agent
+        </Text>
+        <Text style={{ fontSize: 14, color: 'rgba(15,23,42,0.60)', fontFamily: '微软雅黑' }}>02 / 12</Text>
+    </Box>
+</Slide>

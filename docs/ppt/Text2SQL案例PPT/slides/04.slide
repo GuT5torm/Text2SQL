@@ -1,0 +1,89 @@
+<Slide style={{ background: '#FFFFFF', padding: '32px 56px 24px 56px' }}>
+        <Box style={{ height: 84, flexDirection: 'row', alignItems: 'center', gap: 16 }}>
+        <Box style={{ width: 6, height: 44, background: '#3B82F6' }} />
+        <Text style={{ fontSize: 34, fontWeight: 'bold', color: '#0F172A', fontFamily: '微软雅黑' }}>
+            六层职责，单进程部署
+        </Text>
+    </Box>
+
+        <Box style={{ height: 548, flexDirection: 'column' }}>
+                <Box style={{ flexDirection: 'column' }}>
+            <Box style={{ flexDirection: 'row', height: 30, alignItems: 'center' }}>
+                <Text style={{ fontSize: 14, fontWeight: 'bold', color: 'rgba(15,23,42,0.55)', width: 250, fontFamily: '微软雅黑' }}>
+                    分层硬约束
+                </Text>
+                <Text style={{ fontSize: 14, fontWeight: 'bold', color: 'rgba(15,23,42,0.55)', width: 150, fontFamily: '微软雅黑' }}>
+                    层
+                </Text>
+                <Text style={{ fontSize: 14, fontWeight: 'bold', color: 'rgba(15,23,42,0.55)', fontFamily: '微软雅黑' }}>
+                    职责
+                </Text>
+            </Box>
+            <Box style={{ height: 8 }} />
+            {[
+                ['只做参数校验与序列化', 'api 接口层', '15 个 HTTP 接口，含 SSE 流式对话与语义层调试接口'],
+                ['不直接连数据库', 'agent 编排层', '8 个业务节点 + 3 个终态节点，重试回环与 Checkpointer'],
+                ['不调模型、不执行 SQL', 'semantic 语义层', '7 个指标、6 张业务表、9 个维度，另含取值同义与时间词映射'],
+                ['密钥只从 .env 读取', 'llm 模型层', '网关抽象与桩实现同接口，便于替换与离线测试'],
+                ['只暴露仓储层方法', 'db 数据层', '只读连接、守卫校验、行数上限与超时中断'],
+                ['前端只负责渲染', 'chart 图表层', '模型决策与规则兜底结合，输出 ECharts option'],
+            ].map((row, i) => (
+                <Box key={i} style={{
+                    flexDirection: 'row', alignItems: 'center', height: 50,
+                    marginBottom: 6,
+                    background: i % 2 === 0 ? 'rgba(59,130,246,0.08)' : 'rgba(6,182,212,0.10)',
+                    borderRadius: 6,
+                    padding: '0 14px',
+                }}>
+                    <Text style={{ fontSize: 14, color: '#0F172A', width: 250, fontFamily: '微软雅黑' }}>
+                        {row[0]}
+                    </Text>
+                    <Text style={{
+                        fontSize: 17, fontWeight: 'bold', width: 150,
+                        color: i % 2 === 0 ? '#3B82F6' : '#06B6D4', fontFamily: '微软雅黑',
+                    }}>
+                        {row[1]}
+                    </Text>
+                    <Text style={{ fontSize: 15, color: 'rgba(15,23,42,0.80)', fontFamily: '微软雅黑' }}>
+                        {row[2]}
+                    </Text>
+                </Box>
+            ))}
+        </Box>
+
+        <Box style={{ height: 14 }} />
+
+        <Box style={{ flexDirection: 'row', gap: 20, height: 158 }}>
+            {[
+                ['节点不连库', 'agent/nodes 下不出现数据库连接，只调用 db/repository 暴露的方法。'],
+                ['语义层不调模型', 'semantic 下保持纯函数，不出现大模型调用与 SQL 执行。'],
+                ['密钥只在 .env', '代码与配置文件中不出现任何密钥字面量。'],
+            ].map((row, i) => (
+                <Box key={i} style={{
+                    flex: 1,
+                    background: '#FFFFFF',
+                    border: '1px solid rgba(15,23,42,0.12)',
+                    borderTop: '4px solid #3B82F6',
+                    borderRadius: 8,
+                    padding: '16px 18px',
+                    flexDirection: 'column',
+                    gap: 10,
+                }}>
+                    <Text style={{ fontSize: 19, fontWeight: 'bold', color: '#0F172A', fontFamily: '微软雅黑' }}>
+                        {row[0]}
+                    </Text>
+                    <Text style={{ fontSize: 14, color: 'rgba(15,23,42,0.78)', lineHeight: 1.55, fontFamily: '微软雅黑' }}>
+                        {row[1]}
+                    </Text>
+                </Box>
+            ))}
+        </Box>
+    </Box>
+
+        <Box style={{ height: 32, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+        <Text style={{ fontSize: 14, color: 'rgba(15,23,42,0.60)', fontFamily: '微软雅黑' }}>
+            Text2SQL 电商数据分析 Agent
+        </Text>
+        <Text style={{ fontSize: 14, color: 'rgba(15,23,42,0.60)', fontFamily: '微软雅黑' }}>04 / 12</Text>
+    </Box>
+</Slide>

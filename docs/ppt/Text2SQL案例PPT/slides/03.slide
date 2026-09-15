@@ -1,0 +1,106 @@
+<Slide style={{ background: '#FFFFFF', padding: '32px 56px 24px 56px' }}>
+        <Box style={{ height: 84, flexDirection: 'row', alignItems: 'center', gap: 16 }}>
+        <Box style={{ width: 6, height: 44, background: '#3B82F6' }} />
+        <Text style={{ fontSize: 34, fontWeight: 'bold', color: '#0F172A', fontFamily: '微软雅黑' }}>
+            一句话进来，可追溯的结果出去
+        </Text>
+    </Box>
+
+        <Box style={{ height: 548, flexDirection: 'row', gap: 32 }}>
+                <Box style={{ width: 330, flexDirection: 'column' }}>
+            <Text style={{ fontSize: 22, fontWeight: 'bold', color: '#0F172A', fontFamily: '微软雅黑' }}>
+                四段闭环
+            </Text>
+            <Box style={{ height: 16 }} />
+            {[
+                ['意图识别', '判断是取数、追问还是闲聊'],
+                ['口径召回', '从语义层取回指标与维度定义'],
+                ['生成与校验', '出 SQL，先过守卫再执行'],
+                ['执行与呈现', '结果配图表与结论一起返回'],
+            ].map((row, i) => (
+                <Box key={i} style={{ flexDirection: 'column' }}>
+                    <Box style={{
+                        flexDirection: 'row', alignItems: 'center', gap: 12,
+                        background: i === 0 ? '#3B82F6' : i === 1 ? '#06B6D4' : 'rgba(59,130,246,0.12)',
+                        borderRadius: 8, padding: '14px 16px',
+                    }}>
+                        <Text style={{
+                            fontSize: 16, fontWeight: 'bold', fontFamily: 'Consolas',
+                            color: i < 2 ? '#FFFFFF' : '#3B82F6',
+                        }}>0{i + 1}</Text>
+                        <Box style={{ flexDirection: 'column', gap: 2 }}>
+                            <Text style={{
+                                fontSize: 18, fontWeight: 'bold', fontFamily: '微软雅黑',
+                                color: i < 2 ? '#FFFFFF' : '#0F172A',
+                            }}>{row[0]}</Text>
+                            <Text style={{
+                                fontSize: 14, fontFamily: '微软雅黑',
+                                color: i < 2 ? 'rgba(255,255,255,0.85)' : 'rgba(15,23,42,0.66)',
+                            }}>{row[1]}</Text>
+                        </Box>
+                    </Box>
+                    {i < 3 ? <Box style={{ width: 2, height: 16, background: '#3B82F6', marginLeft: 24 }} /> : null}
+                </Box>
+            ))}
+            <Box style={{ height: 20 }} />
+            <Box style={{ background: 'rgba(6,182,212,0.10)', borderRadius: 8, padding: '16px 18px' }}>
+                <Text style={{ fontSize: 15, color: '#0F172A', lineHeight: 1.5, fontFamily: '微软雅黑' }}>
+                    每一段的输入输出都有明确落点，任一段失败都能定位到具体环节。
+                </Text>
+            </Box>
+        </Box>
+
+                <Box style={{ width: 806, flexDirection: 'column' }}>
+            <Text style={{ fontSize: 22, fontWeight: 'bold', color: '#0F172A', fontFamily: '微软雅黑' }}>
+                “可信”指什么：三条判据，各落到一个机制
+            </Text>
+            <Box style={{ height: 16 }} />
+            <Table
+                style={{ width: '100%', height: 320 }}
+                defaultTextStyle={{ fontSize: 15, textAlign: 'left', fontFamily: '微软雅黑', color: '#0F172A' }}
+                defaultCellStyle={{
+                    padding: 14,
+                    border: {
+                        left: { width: 1, color: 'rgba(15,23,42,0.12)' },
+                        right: { width: 1, color: 'rgba(15,23,42,0.12)' },
+                        top: { width: 1, color: 'rgba(15,23,42,0.12)' },
+                        bottom: { width: 1, color: 'rgba(15,23,42,0.12)' },
+                    },
+                }}
+                cells={[
+                    [
+                        { text: '判据', textStyle: { bold: true, color: '#FFFFFF', fontSize: 16 }, cellStyle: { background: { color: '#06B6D4' } } },
+                        { text: '实现方式', textStyle: { bold: true, color: '#FFFFFF', fontSize: 16 }, cellStyle: { background: { color: '#06B6D4' } } },
+                        { text: '落到哪里', textStyle: { bold: true, color: '#FFFFFF', fontSize: 16 }, cellStyle: { background: { color: '#06B6D4' } } },
+                    ],
+                    [
+                        { text: '口径可追溯', textStyle: { bold: true } },
+                        '命中的指标与维度随结果返回，边界说明原样透传',
+                        '结果区展示本轮采用的指标与 caveats',
+                    ],
+                    [
+                        { text: '过程可核对', textStyle: { bold: true }, cellStyle: { background: { color: 'rgba(15,23,42,0.04)' } } },
+                        { text: '本轮 SQL 与结果集对使用者可见，不隐藏中间过程', cellStyle: { background: { color: 'rgba(15,23,42,0.04)' } } },
+                        { text: 'SQL 面板与结果表同屏呈现', cellStyle: { background: { color: 'rgba(15,23,42,0.04)' } } },
+                    ],
+                    [
+                        { text: '越权不会发生', textStyle: { bold: true } },
+                        '执行前在 AST 层校验，只放行单条查询类语句',
+                        '守卫九条规则，逐条有对应用例',
+                    ],
+                ]}
+            />
+            <Box style={{ height: 18 }} />
+            <Text style={{ fontSize: 16, color: 'rgba(15,23,42,0.72)', lineHeight: 1.55, fontFamily: '微软雅黑' }}>
+                三条判据不是并列口号：前两条决定结果能不能被复核，第三条决定系统在被诱导时会不会越界。
+            </Text>
+        </Box>
+    </Box>
+
+        <Box style={{ height: 32, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+        <Text style={{ fontSize: 14, color: 'rgba(15,23,42,0.60)', fontFamily: '微软雅黑' }}>
+            Text2SQL 电商数据分析 Agent
+        </Text>
+        <Text style={{ fontSize: 14, color: 'rgba(15,23,42,0.60)', fontFamily: '微软雅黑' }}>03 / 12</Text>
+    </Box>
+</Slide>

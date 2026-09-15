@@ -47,6 +47,9 @@ frontend/.vite/
 # 安装时用 --cache .npm-cache 指到这里
 frontend/.npm-cache/
 
+# ---- PPT 编译服务运行时（slidep 守护进程 pid、日志、状态）----
+.slidep/
+
 # ---- 工具与编辑器私有数据 ----
 .workbuddy/
 .vscode/
