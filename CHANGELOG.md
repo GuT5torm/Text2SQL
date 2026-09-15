@@ -224,7 +224,7 @@
 本文件此前只记录文档审查。自本节起同时记录代码实现，粒度为「一个开发任务一次提交」。
 每条记录对应一次 `git commit`，提交号在 `git log` 中可查。
 
-执行环境：Windows 11，Python 3.13.14（`backend/.venv`），Node.js 待前端阶段引入。
+执行环境：Windows 11，Python 3.13.14（`backend/.venv`），Node.js 22.22.2 / npm 10.9.7（`frontend/`）。
 LLM 接入方式按用户确认采用桩模式（`LLM_MOCK=true`），不配置真实密钥。
 
 ### P1　工程底座
@@ -286,6 +286,51 @@ T7 的方案选择：计划中的修法是「接入层从逐节点增量采集�
 | 范围           | T9 与 T10 属于代码改动，超出「P3 只写测试」的原定范围                               | 发现后先向用户确认，获准后纳入 P3，本表记录               |
 | 超时用例         | 初版只把 `SQL_TIMEOUT_SECONDS` 调到 0.5，实际先触发的是扫描量上限                 | 超时用例同时放宽 `SQL_SCAN_LIMIT`；另加一条用例记录「扫描量上限早于超时生效」这一实测事实 |
 | `charts` 图表层 | 未单独建测试文件                                                       | 图型决策的覆盖留到 P5 评测或后续阶段，本次不铺开              |
+
+### P4　前端工程
+
+React 18 + TypeScript + Vite 5 + Ant Design 5 + ECharts 5，`frontend/` 交付 20 个源文件。
+`typecheck` 与 `build` 均通过，前端的每一个字段都对着后端实际返回值核过一遍。
+
+| 编号     | 提交号    | 内容                                                                   | 说明                                                                                                                    | 验证                                       |
+| ------ | ------ | -------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- | ---------------------------------------- |
+| T16    | af74598 | 工程骨架：`package.json`、`vite.config.ts`、`tsconfig.json`、`index.html`、`.npmrc`、`.gitignore` | `/api` 代理到 8000；`manualChunks` 把 echarts／antd／react 拆成独立 chunk；忽略规则补 `node_modules/`、`dist/`、`.npm-cache/` | 首次 `npm install` 走 npmmirror 成功，锁文件入库        |
+| T17    | 37dcc44 | `src/api/`：`types.ts`、`client.ts`、`chat.ts`、`session.ts`              | 类型与 `summarize_result` 及 session 接口逐字段对齐，一律沿用后端 snake_case；`ApiError` 带出 FastAPI 的 `detail` 文案            | 与 `/api/session`、`/api/session/{id}` 实测返回值比对无偏差 |
+| T18    | 7704007 | `src/hooks/useChatStream.ts`                                          | 一轮问答的状态机：按 `turn.key` 隔离多轮、阶段追加、结果落地、区分用户中断与请求失败                                                                   | SSE 实测依次收到 7 条 stage、1 条 result、1 条 done    |
+| T19    | 37d3c79 | `src/components/`：九个组件                                               | 阶段指示、图表容器、SQL 折叠面板、结果表格、口径标签、答文排版、答案卡片、结果区、可拖拽分栏                                                                   | 见下方「按实测载荷修正的三处」                           |
+| T20    | dfb3007 | `src/pages/ChatPage.tsx`、`HistoryPage.tsx`、`App.tsx`、`main.tsx`       | 对话页三区、历史页搜索与归档筛选、HashRouter 外壳与「桩实现模式」角标                                                                          | 重命名／归档／列表三条接口实测通过                        |
+| T21    | 164e7e3 | `frontend/README.md`                                                 | 目录说明、`typecheck`/`build` 命令、三步自测流程、五条已知约束                                                                          | 命令与本文一致                                   |
+
+#### 按实测载荷修正的三处
+
+完成后用真实返回的 JSON 逐项比对，改掉三处只在运行时才会暴露的不一致：
+
+| 位置                              | 实测结果                                                              | 修正                                                                     |
+| ------------------------------- | ----------------------------------------------------------------- | ---------------------------------------------------------------------- |
+| `types.ts` 的 `TimeRange.resolved` | 声明为 `boolean`，实际是字符串「2026-08-01 起至 2026-08-31 止」                   | 改为 `string`；`start`/`end` 补注释说明是半开区间 `[start, end)`                    |
+| `AnswerCard` 的 error 分支         | `give_up` 节点的 `answer` 已原样包含最后一次语句与报错所在的代码块，卡片再挂一个 `SqlPanel` 就是两份相同内容 | `status === 'error'` 时不渲染 `SqlPanel`，结构化查看由右侧结果区承担                     |
+| `MetricBadge` 的 caveats         | 口径文本形如「成交总额：不含已取消与未支付订单……」整串进 Tag 会把卡片撑满                          | 按第一个全角冒号拆分：标签显示指标名（超十字截断），完整口径进 Tooltip                                |
+
+#### 四类终态的核对
+
+桩实现固定返回 query 意图，反问／闲聊／失败三条分支本地跑不到。做法是临时替换 `Gateway.complete_json` 的返回值强制走向各分支，取出 `summarize_result` 的载荷逐字段核对（该脚本为一次性排查，核对后已删除）：
+
+| 终态       | status     | stages                                                     | 前端渲染要点                                    |
+| -------- | ---------- | ---------------------------------------------------------- | ----------------------------------------- |
+| 成功 ok    | `ok`       | route→retrieve→generate→validate→execute→visualize→summarize | 完整链路，图表 + SQL + 明细 + 口径标签                 |
+| 反问 clarify | `clarify`  | route→clarify                                              | `sql` 为空，`answer` 是反问句；用中性灰条提示区分于「出错」      |
+| 闲聊 chitchat | `chitchat` | route→respond                                              | 只渲染答文；内含换行与 `-` 列表，由 `AnswerText` 做最小排版   |
+| 失败 error | `error`    | route→retrieve→generate→validate→**fix→validate**×3→give_up | `retry_count=4`，`StageIndicator` 显示「修正语句 ×n」 |
+
+#### P4 的偏离与修正
+
+| 位置                    | 情况                                                                                                     | 处理                                                        |
+| --------------------- | ------------------------------------------------------------------------------------------------------ | --------------------------------------------------------- |
+| `npm install` 的缓存目录   | 本机 `%LOCALAPPDATA%\npm-cache` 无写权限，默认安装会失败                                                              | 改用项目内 `.npm-cache` 目录（`--cache .npm-cache`）并写入 `.gitignore`；README 记录该命令 |
+| registry              | 首次对着 npmjs 安装无响应                                                                                       | `frontend/.npmrc` 固定指向 npmmirror；README 说明直连网络下可删除该文件      |
+| 前端单测                  | 未引入 vitest 与 testing-library                                                                            | 验证改为「TS 全量类型检查 + 与后端实测返回值逐项比对」；组件单测留到 P7 视时间决定           |
+| 宽 <1024px             | `SplitPane` 改为上下堆叠后，上下两区各自滚动可能嵌套滚动条                                                                     | 保留当前行为，窄屏不是演示主场景；已在 README 已知约束中说明                        |
+| FastAPI 直挂 dist       | `/history` 之类的 BrowserRouter 路径会返回 404                                                                  | 统一用 HashRouter，不依赖服务端 URL 重写；Nginx 场景本身已配 `try_files` 回退   |
 
 ### P1 与 P6 的偏离与修正
 

@@ -98,6 +98,32 @@ D2 没有采用「接入层从增量采集、绕过终态」的规避写法，�
 
 同时把执行中断的原因分开：原先超时与扫描量超都报「超过 N 秒被中断」，实测递归查询不到一秒就跑满默认扫描量上限，报错与实际原因不符会让 fix 节点改错方向。
 
+## P4 前端工程（已完成）
+
+React 18 + TypeScript + Vite 5 + Ant Design 5 + ECharts 5，`frontend/` 20 个源文件，六次提交（`af74598` → `164e7e3`）。`npm run typecheck` 与 `npm run build` 均通过，产物 3.0 MB，拆为 index／react／antd／echarts 四个 chunk。
+
+| 层 | 内容 |
+|---|---|
+| `api/` | 类型与后端 `summarize_result` 及 session 接口逐字段对齐，一律沿用后端 snake_case；`fetch` 封装统一抛出携带 `detail` 文案的 `ApiError` |
+| `hooks/` | `useChatStream`：按 `turn.key` 隔离多轮，追加阶段、落地结果、区分用户中断与请求失败 |
+| `components/` | 九个组件。阶段指示（完成后收起为一行，fix 回环显示「修正语句 ×n」）、图表容器（字段校验失败退回表格）、SQL 折叠面板、结果表格、口径标签、答文最小排版、答案卡片、结果区、可拖拽分栏 |
+| `pages/` | 对话页三区布局（结论在左流内保持上下文，图表与明细在右）、历史页搜索与归档筛选 |
+
+完成方式是先对齐后端契约再动手，写完后用真实返回的 JSON 逐项比对，改掉三处只在运行时才会暴露的不一致：
+
+| 位置 | 实测结果 | 修正 |
+|---|---|---|
+| `TimeRange.resolved` | 声明为 `boolean`，实际是字符串「2026-08-01 起至 2026-08-31 止」 | 改为 `string`，并注明 `start`/`end` 是半开区间 |
+| `AnswerCard` 的 error 分支 | `give_up` 的回答已含最后一次语句与报错的代码块，卡片再挂 `SqlPanel` 就是两份相同内容 | error 终态不渲染 `SqlPanel` |
+| `MetricBadge` 的 caveats | 口径文本整串进 Tag 会把卡片撑满 | 按全角冒号拆分，标签显示指标名，完整口径进 Tooltip |
+
+四类终态核对：成功路径用真实 SSE 请求验证；反问、闲聊、失败三条分支在桩模式下走不到（桩实现固定返回 query 意图），改为临时替换 `Gateway.complete_json` 的返回值强制走向各分支，取出载荷逐字段核对后删除该脚本。失败路径实测 `retry_count=4`，stages 为 route→retrieve→generate→validate→(fix→validate)×3→give_up，阶段指示能正确显示修正次数。
+
+两项未走常规路径的处理，已记入 CHANGELOG：
+
+1. 前端未引入单测框架（vitest + testing-library）。验证手段是「TS 全量类型检查 + 与后端实测返回值逐项比对」，组件级单测留待后续决定。
+2. 本机 `%LOCALAPPDATA%\npm-cache` 无写权限、npmjs 直连无响应，改用 npmmirror registry 与项目内 `.npm-cache` 目录解决，两点都写进了 `frontend/README.md`。
+
 ## P1 工程底座与 P6 部署配置（已完成）
 
 按「先出方案再执行」的约定，开发分七个部分推进，每部分独立验收。已完成第一部分与第六部分，共六次提交。
@@ -119,10 +145,10 @@ D2 没有采用「接入层从增量采集、绕过终态」的规避写法，�
 
 ## 当前状态
 
-骨架代码可编译、端到端链路可跑通（`/api/chat/sync` 与 `/api/chat` 两条路径在桩实现下均返回完整结果，历史回看可用）。工程底座、部署配置、单元测试全部就位，122 条用例全绿，仓库按任务粒度提交。
+端到端可用：`/api/chat`（SSE）与 `/api/chat/sync` 两条路径在桩实现下均返回完整结果，历史回看可用；前端由后端同源挂载，`http://127.0.0.1:8000` 打开即为完整应用。工程底座、部署配置、单元测试、前端工程全部就位，后端 122 条用例全绿，仓库按任务粒度提交，`git log` 共 26 次提交（含早期文档批次）。
 
 LLM 接入按用户确认为桩模式，未配置真实密钥，因此 PPT 的 P9 截图仍处于「未取得 `llm_mock=false` 的真实运行记录」状态，P10 的数值同样待评测后再填。
 
-待推进：P4 前端工程（React + TS + Vite + AntD + ECharts），P5 评测基线（`eval/cases.yaml` 与 `run_eval.py`），P7 交付收尾（截图、数值回填、可编辑 `.pptx`）。
+待推进：P5 评测基线（`eval/cases.yaml` 与 `run_eval.py`），P7 交付收尾（截图、数值回填、可编辑 `.pptx`）。
 
 另有一项待定：`docs/` 下 7 处仍写着「前端发起新一轮时先清空 stages」，与 P2 修完的实现不一致（实训6 的 72/161 行、UIUX 文档 86 行、开发流程文档 371 行、语料 06/08/11/16），按评审节奏未擅改，留到 P7 统一核对。
