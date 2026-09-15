@@ -1,0 +1,42 @@
+/* 全局样式只放三类内容：盒模型重置、滚动条、Ant Design 覆盖不了的排版细节。
+   颜色与间距一律交给 Ant Design 的 token，不在这里复制一份色值。 */
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB',
+    'Microsoft YaHei', sans-serif;
+  font-size: 14px;
+  line-height: 1.6;
+  color: rgba(0, 0, 0, 0.88);
+  background: #f5f5f5;
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.18);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 0, 0, 0.3);
+}
+
+/* 结论文本允许长单词换行，避免宽表列名把卡片撑破 */
+p,
+li {
+  overflow-wrap: anywhere;
+}
