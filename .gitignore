@@ -33,8 +33,8 @@ htmlcov/
 
 # ---- 评测输出 ----
 # report.json 是每次跑评测的快照，内容可由 cases.yaml 复现，不入库
-eval/results/
-eval/report.json
+backend/eval/results/
+backend/eval/report.json
 
 # ---- 部署运行产物 ----
 deploy/logs/
