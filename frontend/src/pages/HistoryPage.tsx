@@ -120,6 +120,11 @@ export function HistoryPage() {
           placeholder="按标题或提问内容搜索"
           style={{ width: 280 }}
           onSearch={(v) => setKeyword(v.trim())}
+          // allowClear 只清输入框，不点搜索的话不会触发 onSearch。
+          // 这里补一次 onChange，点 X 时立即恢复完整列表
+          onChange={(e) => {
+            if (!e.target.value) setKeyword('');
+          }}
         />
         <Segmented<Filter>
           value={filter}

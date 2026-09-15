@@ -2,9 +2,8 @@ import { useEffect, useMemo, useRef } from 'react';
 import * as echarts from 'echarts';
 import { Alert, Card, Empty, Typography } from 'antd';
 import type { ChartPayload } from '@/api/types';
-import { ResultTable } from './ResultTable';
 
-const { Text, Paragraph } = Typography;
+const { Text } = Typography;
 
 const CHART_HEIGHT = 320;
 
@@ -48,9 +47,6 @@ export function ChartPanel({ chart, columns, rows, title }: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const instanceRef = useRef<echarts.ECharts | null>(null);
 
-  const fallbackRows = chart?.table_rows?.length ? chart.table_rows : rows;
-  const fallbackColumns = chart?.table_columns?.length ? chart.table_columns : columns;
-
   const { option, heading } = useMemo(() => {
     if (!chart || !chart.option) return { option: null, heading: title ?? '查询结果' };
     // 后端把标题写进了 option，按视觉规范改为卡片标题呈现，图表内不再重复
@@ -93,18 +89,26 @@ export function ChartPanel({ chart, columns, rows, title }: Props) {
           style={{ height: CHART_HEIGHT, display: 'flex', flexDirection: 'column', justifyContent: 'center' }}
         />
       ) : (
-        <ResultTable columns={fallbackColumns} rows={fallbackRows} />
+        // 退回表格时这里不重复渲染 ResultTable：调用方（AnswerCard / ResultPane）
+        // 都已在图表下方挂了一份，再渲染一次会出现上下两张一模一样的表
+        <div
+          style={{
+            height: 72,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+          }}
+        >
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            结果以表格形式呈现{check.reason ? `：${check.reason}` : ''}
+          </Text>
+        </div>
       )}
 
       {renderable && chart?.reason && (
-        <Paragraph type="secondary" style={{ fontSize: 12, margin: '8px 0 0' }}>
+        <Text type="secondary" style={{ display: 'block', fontSize: 12, marginTop: 8 }}>
           图型选择依据：{chart.reason}
-        </Paragraph>
-      )}
-      {!renderable && rows.length > 0 && (
-        <Paragraph type="secondary" style={{ fontSize: 12, margin: '8px 0 0' }}>
-          已退回表格呈现{check.reason ? `：${check.reason}` : chart?.reason ? `：${chart.reason}` : ''}
-        </Paragraph>
+        </Text>
       )}
       {warnings.length > 0 && (
         <div style={{ marginTop: 8 }}>

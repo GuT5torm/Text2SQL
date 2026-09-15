@@ -75,7 +75,15 @@ export function ChatPage() {
   const handleSend = useCallback(
     (question: string) => {
       if (!sessionId) return;
-      void send(sessionId, question);
+      // 提问后回取一次会话元数据：轮次只在加载时取过一次，不回取的话
+      // 「已进行 N 轮」会一直停在进入页面时的数字
+      void send(sessionId, question).then(() => {
+        getSession(sessionId)
+          .then((detail) =>
+            setSession((prev) => (prev ? { ...prev, turn_count: detail.turn_count } : prev)),
+          )
+          .catch(() => undefined);
+      });
     },
     [sessionId, send],
   );

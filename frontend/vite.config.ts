@@ -20,6 +20,10 @@ export default defineConfig({
         target,
         changeOrigin: true,
       },
+      // 后端自带的接口文档不在 /api 下。只代理 /api 的话这两个路径会被
+      // SPA fallback 吃成 index.html，调试时打不开文档页
+      '/docs': { target, changeOrigin: true },
+      '/openapi.json': { target, changeOrigin: true },
     },
   },
   build: {

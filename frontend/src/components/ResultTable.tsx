@@ -37,10 +37,12 @@ function renderCell(value: unknown) {
 export function ResultTable({ columns, rows, pageSize = 50 }: Props) {
   if (!columns.length) return null;
 
-  const tableColumns: ColumnsType<Record<string, unknown>> = columns.map((name) => ({
+  const tableColumns: ColumnsType<Record<string, unknown>> = columns.map((name, index) => ({
     title: name,
-    dataIndex: name,
-    key: name,
+    // 取值走位置而不是列名。后端已为同名列补过序号后缀，但历史落库的结果集
+    // 仍可能是补后缀之前的列名，按列名取会让两列显示同一个值
+    dataIndex: ['__cells', index],
+    key: `${name}#${index}`,
     ellipsis: true,
     render: renderCell,
   }));
@@ -49,7 +51,7 @@ export function ResultTable({ columns, rows, pageSize = 50 }: Props) {
     <Table<Record<string, unknown>>
       size="small"
       columns={tableColumns}
-      dataSource={rows.map((row, index) => ({ ...row, __key: index }))}
+      dataSource={rows.map((row, index) => ({ __key: index, __cells: Object.values(row) }))}
       rowKey="__key"
       scroll={{ x: 'max-content' }}
       pagination={rows.length > pageSize ? { pageSize, showSizeChanger: false, size: 'small' } : false}
