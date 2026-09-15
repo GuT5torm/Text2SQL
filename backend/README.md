@@ -77,12 +77,25 @@ uvicorn app.main:app --reload --port 8000
 
 ```bash
 python tests/smoke.py                       # 端到端冒烟，不依赖密钥，也不需要服务已启动
-python -m pytest tests/ -v                  # 单元测试，P3 阶段补齐；当前目录下无 test_*.py 文件时会显示 no tests ran
+python -m pytest tests/ -q                  # 单元测试，122 条，约 4 秒
 curl http://127.0.0.1:8000/api/health       # PowerShell 下请用 (Invoke-WebRequest ...).Content
 ```
 
 `smoke.py` 用 FastAPI 的 TestClient 在进程内走完整链路：健康检查 → 语义层一致性 → 口径召回 → 建会话 → 三轮问答。
 退出码 0 表示全部通过，非 0 时逐条打印失败原因。
+
+单元测试分五组，与分层一一对应：
+
+| 文件                    | 覆盖对象                                                        |
+| --------------------- | ----------------------------------------------------------- |
+| `test_guard.py`       | SQL 守卫 R1–R7 各正反例、LIMIT 边界、CTE 与子查询别名、`metrics.yaml` 示例全量过守卫 |
+| `test_repository.py`  | 只读连接拒绝写入、行数截断、R8 超时与扫描量中断、会话仓储的增删改查与主键回填             |
+| `test_semantic.py`    | 三份 YAML 的一致性校验、相对时间换算的周期边界、规则召回、上下文渲染                        |
+| `test_api.py`         | health、会话全生命周期、语义层调试接口、两轮问答的进度与落库、SSE 事件序列                    |
+| `test_layering.py`    | 三条分层硬约束的可执行检查：节点不建连、语义层是纯函数、源码无密钥字面量                        |
+
+跑测试需要业务库存在（未造数时依赖业务库的用例会跳过而不是失败）。应用库由夹具指向临时目录，不会写入 `data/app.db`。
+接入真实模型后，依赖桩实现的链路用例会自动跳过。
 
 `/api/health` 的典型返回：
 
@@ -119,7 +132,7 @@ backend/
 │   ├── ecommerce.db       样例业务库（造数生成，不入版本库）
 │   └── app.db             会话与回合的运行时库（自动生成，不入版本库）
 ├── eval/                  评测集与基线脚本（P5 阶段建立）
-└── tests/                 smoke.py 端到端冒烟，单测在后续阶段补齐
+└── tests/                 smoke.py 端到端冒烟 + 五个测试文件（conftest.py 提供共享夹具）
 ```
 
 分层上有三条硬约束，改动时请保持：
@@ -127,6 +140,8 @@ backend/
 1. `app/agent/nodes/` 下不出现数据库连接，只能调 `app/db/repository.py` 暴露的方法；
 2. `app/semantic/` 下不出现 LLM 调用与 SQL 执行，保持纯函数；
 3. 密钥只出现在 `.env`，代码与配置文件中不出现字面量。
+
+三条都由 `tests/test_layering.py` 自动核对，不需要人工评审：该文件用 AST 扫描导入与字面量，违反约束即测试失败。
 
 ## 五、常用配置项
 
