@@ -404,6 +404,25 @@ P2-T7 修掉 `stages` 跨轮累积后，`docs/` 下仍有表述停在修复前�
 | T30 | 76732e4 | M1 前端侧、轻微 2/3/4/6 | `ResultTable` 按列位置取值；`ChartPanel` 删除与结果区重复的那张表；`ChatPage` 提问后回拉详情刷新轮次；`HistoryPage` 清空搜索同步复位筛选；`vite.config` 补 `/docs` 与 `/openapi.json` 代理 | `npm run typecheck` 通过 |
 | T31 | a07f2fd | M3、M4、轻微 7/8 | `nginx.conf` 重写：80 只服务 ACME 校验并跳 443，新增 443 块，`root` 合并为 server 级一处并改为项目实际路径，`client_max_body_size` 改 10m；`start.sh` 补可执行位（100644 → 100755），存活判断加 `/proc/$pid/cmdline` 归属校验，启动前 `ss -ltn` 预检端口，用法提示改为按 `# USAGE_BEGIN` 标记位提取 | `bash -n` 通过；无参数运行打印 4 行用法；无 PID 文件与伪造 PID 两种情况下 `status` 均输出「未运行」。本机无 nginx，未跑 `nginx -t` |
 | T32 | 8c1b2ef | 口径偏差第一条 | UIUX 第 198 行、语料 06 第 169 行、语料 14 第 227 行的 `status` / `duration_ms` 改为 `detail` / `elapsed_ms`，注明运行态由前端推导 | 与 `state.py:25-32` 的 `StageEvent` 逐字段对齐 |
+| T34 | 5b23af0 | 语义层四类召回缺陷 | `loader.recall` 增 `_matched_time_terms`（长词优先）与 `_strip_phrases`，维度打分前先摘掉时间词；指标改为精确命中 + 长短语支配，仅当整句无任何精确信号时才走近似兜底；`metrics.yaml` 补 `sales_volume` 口语说法；`tables.yaml` 给 `order_month` 加「走势 / 趋势」；`synonyms.yaml` 补七个大区取值同义并给对应维度加分 | 口径召回 19/32 → 32/32（指标 30/30、维度 29/29、时间 24/24、空召 2/2）；新增 8 条用例，后端 145 → 153 passed；`smoke.py` 退出码 0 |
+| T35 | e569fed | 案例 PPT 骨架 | `docs/ppt/Text2SQL案例PPT/` 新增 `STORY.md`、`DESIGN.md` 与 `slides/01-12.slide`，编译产出同名 pptx | 全部图形由 Box + Text 原生形状构成，pptx 内无 `ppt/media/` 条目，文字全在可编辑文本框；`slidep-validate --all` 12/12 passed |
+
+#### T35 页面的事实核准
+
+页面上的每个数字都从源码或脚本输出取得，不使用估算值。与旧文档不一致的三处，以代码为准：
+
+| 项 | 旧文档口径 | 代码实测 | 页面采用 |
+|---|---|---|---|
+| 守卫规则条数 | 七条 + 仓储层一项（R1–R7 + R8） | `guard.py` 另有 R9 函数白名单 | 九条（R1–R9） |
+| 运行环境 Python 版本 | 3.12+ | `backend/.venv` 实测 3.13.14 | Python 3.13 |
+| 口径召回完全命中率 | 19/32　59.4% | T34 修复后 32/32 | 32/32 |
+
+版本号取自 `backend/.venv` 的 `pip list`：fastapi 0.141.1、uvicorn 0.524、langgraph 1.2.11、langchain-core 1.6.3、SQLAlchemy 2.0.52、sqlglot 30.18.0、pydantic 2.13.5、pydantic-settings 2.15.0、openai 3.13.0。行数上限 1000、超时 10 秒、`sql_max_retry` 3 取自 `app/config.py`。语义层 7 指标 / 6 表 / 9 维度 / 27 取值同义 / 22 时间词取自 `load_catalog()` 实测。
+
+#### T35 的两处占位
+
+- P9 六张运行截图为虚线占位框。需要非桩模式的真实运行素材才能回填。
+- P10 保留「真实模型下的端到端准确率」占位。当前 `pipeline` 组在桩实现下运行，语句来自预置模板，只反映链路可用性；口径召回 32/32 与守卫拦截 8/8 两组不经过模型，是真实值。
 
 #### 写 R9 时踩到的三个 sqlglot 行为
 
