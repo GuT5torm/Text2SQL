@@ -1,11 +1,15 @@
 """Repository 的 SQLite 实现。
 
-执行期加固在这里落地，包括两条守卫无法覆盖的规则：
+执行期加固在这里落地，包括三条守卫无法覆盖的规则：
 
   R8_STATEMENT_TIMEOUT  用 SQLite 的 progress handler 实现。每执行若干条
                         虚拟机指令回调一次，超时即返回非零中断查询，
                         比在外部起线程 kill 更干净，也不会留下半开的事务。
      行数上限          游标只取前 max_rows 行，超出部分置 truncated 标记。
+     结果体积上限      单行里放一个超大值（例如几十 MB 的 blob）时，行数
+                        上限拦不住，序列化阶段会一次性吃掉数倍内存。这里
+                        在返回前估算体积并拒绝，是守卫函数白名单之外的
+                        第二道兜底。
 
 连接本身由 db/engine.py 以只读模式建立，本模块不做任何写操作。
 """
@@ -38,6 +42,49 @@ from app.db.repository import (
 # progress handler 的回调间隔（虚拟机指令数）。太小会拖慢查询，
 # 太大会让超时判断变粗，1000 在演示规模下延迟足够低。
 _PROGRESS_INTERVAL = 1000
+
+
+def _dedupe_columns(columns: list[str]) -> list[str]:
+    """重名列补序号后缀，保证列名在结果集内唯一。
+
+    SELECT c.name AS n, p.name AS n 在 SQL 里合法，但结果集按列名组装成字典时
+    后一列会直接覆盖前一列，前端表头也会出现两个同名的列各显示同一个值。
+    后缀只对第二个及以后的重名列追加，未重名的列名保持原样，界面仍与 SQL 对得上。
+    """
+    used: set[str] = set()
+    out: list[str] = []
+    for raw in columns:
+        base = raw or "column"
+        name = base
+        idx = 1
+        while name in used:  # 连原列名都已存在时继续加序号，避免补出新的重名
+            idx += 1
+            name = f"{base}_{idx}"
+        used.add(name)
+        out.append(name)
+    return out
+
+
+def _estimate_bytes(columns: list[str], rows: list[dict[str, Any]]) -> int:
+    """结果集体积估算。
+
+    不真的序列化再量长度：行数已有硬上限，能把体积顶穿的是单个超大值，
+    估算只需覆盖到这个量级。字符串按 UTF-8 最坏情况（每字符 3 字节）计。
+    """
+    total = 0
+    for row in rows:
+        for key, value in row.items():
+            total += len(key) * 3
+            if value is None:
+                total += 4
+            elif isinstance(value, (bytes, bytearray)):
+                total += len(value)
+            elif isinstance(value, str):
+                total += len(value) * 3
+            else:
+                total += 16
+    # 列名本身也要占位，空结果集不该估成 0 以外的误导值
+    return total + sum(len(c) * 3 for c in columns)
 
 
 class SqliteQueryRepository(QueryRepository):
@@ -81,7 +128,7 @@ class SqliteQueryRepository(QueryRepository):
             try:
                 cur = dbapi.cursor()
                 cur.execute(sql, params or {})
-                columns = [d[0] for d in (cur.description or [])]
+                columns = _dedupe_columns([d[0] for d in (cur.description or [])])
                 fetched = cur.fetchmany(max_rows + 1)
                 cur.close()
             except Exception as exc:  # 数据库原始报错要原样保留给 fix 节点
@@ -98,6 +145,18 @@ class SqliteQueryRepository(QueryRepository):
 
         truncated = len(fetched) > max_rows
         rows = [dict(zip(columns, row)) for row in fetched[:max_rows]]
+
+        size = _estimate_bytes(columns, rows)
+        limit = settings.sql_max_result_bytes
+        if size > limit:
+            # 走到这里说明守卫的函数白名单之外仍有漏网的写法。直接拒绝而不是截断：
+            # 截断一个几十 MB 的单值没有意义，用户需要的是换一种问法
+            raise QueryError(
+                f"结果集体积约 {size / 1024 / 1024:.1f} MB，超过上限 "
+                f"{limit / 1024 / 1024:.0f} MB，已拒绝返回。"
+                "请减少返回的字段或改用聚合查询。"
+            )
+
         return QueryResult(
             sql=sql,
             columns=columns,
@@ -105,6 +164,7 @@ class SqliteQueryRepository(QueryRepository):
             row_count=len(rows),
             truncated=truncated,
             elapsed_ms=round((time.monotonic() - started) * 1000, 1),
+            bytes_estimate=size,
         )
 
     # —— 接口实现 ——

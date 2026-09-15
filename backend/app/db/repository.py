@@ -22,6 +22,9 @@ class QueryResult:
     row_count: int = 0
     truncated: bool = False
     elapsed_ms: float = 0.0
+    # 结果集体积估算值（字节）。行数上限管不住「一行一个超大值」，
+    # 记录实际体积便于在日志与用例里核对兜底是否触发
+    bytes_estimate: int = 0
 
     def preview(self, n: int = 20) -> list[dict[str, Any]]:
         return self.rows[:n]

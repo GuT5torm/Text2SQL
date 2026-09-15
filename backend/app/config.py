@@ -52,6 +52,9 @@ class Settings(BaseSettings):
     sql_max_retry: int = 3
     # 单次查询允许扫描的最大行数，超过由 SQLite 的 progress handler 中断
     sql_scan_limit: int = 20_000_000
+    # 单个结果集的体积上限（字节）。行数上限挡不住「一行一个超大值」的写法，
+    # 这一条是第二道兜底，超过即拒绝返回，避免序列化时把进程内存打满
+    sql_max_result_bytes: int = 32 * 1024 * 1024
 
     # —— 会话 ——
     # 历史会话回灌给模型的最近轮数
