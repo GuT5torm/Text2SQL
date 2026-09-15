@@ -390,3 +390,44 @@ P2-T7 修掉 `stages` 跨轮累积后，`docs/` 下仍有表述停在修复前�
 | `.env.example` 的 `*_DB_PATH` 项 | 初版按样例取消注释生成 `.env`，值为相对路径 `./data/ecommerce.db`。从项目根目录启动时会被解析到 `C:\Text2SQL\data\`，与代码内置的绝对路径默认值不一致，会导致找不到业务库 | 两行保留注释状态，使用代码默认值。已在 `.env.example` 中写明相对路径的风险          |
 | 部署定位                           | CHANGELOG 第四轮把附录 C 的 HTTPS 部署降级为选修，本次仍补了 `deploy/`。两者不冲突：文件存在，README 明确本地演示不需要 Nginx                       | 保持 Nginx 面向「有域名证书的 Linux 场景」的前提说明，与 `.gitignore` 的日志忽略一并处理 |
 
+### 全产物缺陷排查与修复
+
+排查对象为 P1 至 P5 的全部已提交产物，排查结果见 `缺陷排查报告.md`（严重 3 / 中等 6 / 轻微 8 / 口径偏差 3）。本节记录修复，逐条对应报告编号。共改 26 个文件，八次提交。
+
+| 编号 | 提交号 | 对应缺陷 | 内容 | 验证 |
+| -- | ------ | ---- | ---- | ---- |
+| T25 | 8770787 | S1、S2 第一层 | `guard.py`：`_read_limit` 只取顶层 `args["limit"]`，删除向子树 find 的兜底；新增 R9 标量函数白名单（约 90 个，显式禁 `randomblob`、`zeroblob`、`load_extension`、`readfile`、`writefile`、`edit`、`fts3_tokenizer`、`sqlite_*`），同名函数只报一次 | UNION 双分支子查询语句实测由 1800 行降为 1000 行；`randomblob`、`load_extension` 拦下；12 个常用函数放行。新增 23 条用例，后端 122 → 145 |
+| T26 | 56708d0 | S2 第二层、M1 后端侧 | `config.py` 增 `sql_max_result_bytes`（默认 32MB）；`sqlite_repo` 估算结果集体积并在超限时拒绝返回；重复列名加 `_2` / `_3` 后缀 | 绕过守卫直跑 `randomblob(40000000)` 报「体积约 38.1 MB，超过上限 32 MB」；`SELECT c.name AS n, c.id AS n` 返回 `n` 与 `n_2` 两列 |
+| T27 | 3bd9460 | 口径偏差第三条 | 重试计数收敛到 `fix` 节点一处：校验与执行节点不再自增，路由判定由 `<=` 改 `<`，`fix` 的成功与 `LLMError` 两条路径都写回 `retry_count` | `sql_max_retry=3` 时修正次数由 4 次降为 3 次；`fix` 自身失败也消耗配额，链路必定收敛 |
+| T28 | 4361ae4 | M5、轻微 5 | `checkpointer.py` 的 sqlite 分支补 `PRAGMA journal_mode=WAL` 与 `busy_timeout=5000`；`main.py` 直挂前端产物时给 `/` 与 `/index.html` 设 `no-store` | 默认 MemorySaver 路径不受影响 |
+| T29 | 8d5331e | S3、M2、M6、轻微 1 | `useChatStream` 三条无结果路径分别写出可诊断文案并给重试入口；`abortRef` 改 `Map<key, AbortController>`，补卸载清理与切换会话前显式中断，流式状态仅在无在途请求时复位；`chat.ts` 按 `\r\n` 归一化切帧、补尾部残帧解析、解析失败走 `onError` | `npm run typecheck` 通过 |
+| T30 | 76732e4 | M1 前端侧、轻微 2/3/4/6 | `ResultTable` 按列位置取值；`ChartPanel` 删除与结果区重复的那张表；`ChatPage` 提问后回拉详情刷新轮次；`HistoryPage` 清空搜索同步复位筛选；`vite.config` 补 `/docs` 与 `/openapi.json` 代理 | `npm run typecheck` 通过 |
+| T31 | a07f2fd | M3、M4、轻微 7/8 | `nginx.conf` 重写：80 只服务 ACME 校验并跳 443，新增 443 块，`root` 合并为 server 级一处并改为项目实际路径，`client_max_body_size` 改 10m；`start.sh` 补可执行位（100644 → 100755），存活判断加 `/proc/$pid/cmdline` 归属校验，启动前 `ss -ltn` 预检端口，用法提示改为按 `# USAGE_BEGIN` 标记位提取 | `bash -n` 通过；无参数运行打印 4 行用法；无 PID 文件与伪造 PID 两种情况下 `status` 均输出「未运行」。本机无 nginx，未跑 `nginx -t` |
+| T32 | 8c1b2ef | 口径偏差第一条 | UIUX 第 198 行、语料 06 第 169 行、语料 14 第 227 行的 `status` / `duration_ms` 改为 `detail` / `elapsed_ms`，注明运行态由前端推导 | 与 `state.py:25-32` 的 `StageEvent` 逐字段对齐 |
+
+#### 写 R9 时踩到的三个 sqlglot 行为
+
+版本 30.18.0，方言 sqlite。三条都导致过误报，排查过程记录在 `缺陷修复记录.md`：
+
+1. `exp.And` 的 MRO 为 `And → Expression → Connector → Binary → Func → Condition`，`find_all(exp.Func)` 会把 `WHERE` 里的 AND / OR / NOT 一并捞出，白名单校验会误报「不允许使用函数 and」。按类型名排除 `And / Or / Not / Xor / Connector / Binary / Paren`。
+2. `sql_name()` 返回内部类名而非 SQL 名（`strftime` → `TimeToStr`）。真实函数名只能从 `node.sql(dialect='sqlite')` 的渲染结果用 `^([A-Za-z_]\w*)\s*\(` 匹配。
+3. 日期函数的参数被包进隐式转换节点（`TsOrDsToTimestamp`），渲染结果是裸标识符 `o.created_at`，没有括号。匹配不到时必须跳过，不能退回 `sql_name()`，否则误报 `ts_or_ds_to_timestamp`。
+
+#### 修复后的验证结果
+
+| 项 | 命令 | 结果 |
+|---|---|---|
+| 后端全量用例 | `backend/.venv/Scripts/python.exe -m pytest -q` | 145 passed in 6.04s |
+| 前端类型检查 | `npm run typecheck` | 退出码 0 |
+| 前端生产打包 | `npx vite build` | 3606 模块，产物 gzip 合计约 662 KB |
+| start.sh 语法 | `bash -n deploy/start.sh` | 通过 |
+
+#### 两处环境限制
+
+- 本机 `npm run build` 会在清空 `dist/assets` 这一步被安全删除拦截，且失败后 `dist` 处于半删状态（assets 已空、`index.html` 残留）。规避做法是先构建到临时目录再 `cp -r` 覆盖回 `dist`。当前 `dist` 与源码一致。
+- 后端用例必须用 `backend/.venv/Scripts/python.exe`；托管的 Python 3.13.12 未安装 sqlglot，会 ImportError。
+
+#### 未处理
+
+报告第五节「待实测确认的两条」需要真实浏览器交互，本轮未验证：Vite dev 代理是否缓存 SSE 导致阶段一次性吐出；ECharts 在 `SplitPane` 拖到极窄后拉宽是否残留空白。
+
