@@ -89,6 +89,7 @@ export function ChatPanel({ turns, streaming, onSend, onAbort, onFocus, focusedK
               compact
               focused={turn.key === focusedKey}
               onFocus={onFocus ? () => onFocus(turn.key) : undefined}
+              onRetry={streaming ? undefined : () => onSend(turn.question)}
             />
           </div>
         ))}

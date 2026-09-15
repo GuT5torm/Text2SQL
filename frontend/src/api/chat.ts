@@ -15,7 +15,9 @@ export interface StreamHandlers {
 
 /** 按 SSE 帧边界切分。帧与帧之间是空行，每帧内是 `字段: 值` 行。 */
 export function parseSseChunk(raw: string): { frames: string[]; rest: string } {
-  const parts = raw.split('\n\n');
+  // 后端固定输出 LF，但响应若经过一层会重写行尾的代理（或 Windows 上的
+  // 中间层），帧边界会变成 CRLF。只按 \n\n 切会把整条流当成一个残帧。
+  const parts = raw.replace(/\r\n/g, '\n').split('\n\n');
   const rest = parts.pop() ?? '';
   return { frames: parts, rest };
 }
@@ -40,7 +42,11 @@ export function parseFrame(frame: string): StreamEvent | null {
   try {
     data = payload ? JSON.parse(payload) : null;
   } catch {
-    return null;
+    // result 帧解析不出来意味着这一轮拿不到结果，必须让调用方知道；
+    // stage 帧只用于进度展示，丢一条不影响最终结果，静默跳过即可
+    return event === 'result'
+      ? { type: 'invalid', data: { message: '服务端返回的结果无法解析，请重试' } }
+      : null;
   }
 
   if (event === 'stage') return { type: 'stage', data: data as StageEvent };
@@ -83,8 +89,19 @@ export async function streamChat(
         if (!event) continue;
         if (event.type === 'stage') handlers.onStage(event.data);
         else if (event.type === 'result') handlers.onResult(event.data);
+        else if (event.type === 'invalid') handlers.onError(event.data.message);
         else if (event.type === 'error') handlers.onError(event.data?.message ?? '服务端返回了错误');
       }
+    }
+
+    // 流结束时缓冲区里可能还留着最后一帧：后端若未以空行收尾（或被中间层
+    // 改写），这一帧会被永久丢弃，前端就永远等不到 result
+    const tail = buffer.trim();
+    if (tail) {
+      const event = parseFrame(tail);
+      if (event?.type === 'result') handlers.onResult(event.data);
+      else if (event?.type === 'invalid') handlers.onError(event.data.message);
+      else if (event?.type === 'error') handlers.onError(event.data?.message ?? '服务端返回了错误');
     }
   } finally {
     reader.cancel().catch(() => undefined);

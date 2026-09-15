@@ -1,4 +1,4 @@
-import { Alert, Card, Skeleton, Space, Typography } from 'antd';
+import { Alert, Button, Card, Skeleton, Space, Typography } from 'antd';
 import type { ChatTurn } from '@/hooks/useChatStream';
 import { AnswerText } from './AnswerText';
 import { ChartPanel } from './ChartPanel';
@@ -18,6 +18,8 @@ interface Props {
   compact?: boolean;
   focused?: boolean;
   onFocus?: () => void;
+  /** 失败态的重试入口。由对话区把这一轮的问题重新提交 */
+  onRetry?: () => void;
 }
 
 /**
@@ -25,7 +27,7 @@ interface Props {
  * ok 走完整链路，chitchat 只给文本，clarify 给出补充信息的引导，
  * error 必须带上最后一次语句与报错 —— 失败不能是一片空白。
  */
-export function AnswerCard({ turn, compact = false, focused = false, onFocus }: Props) {
+export function AnswerCard({ turn, compact = false, focused = false, onFocus, onRetry }: Props) {
   const { result, stages, streaming, errorMessage } = turn;
 
   if (errorMessage) {
@@ -37,6 +39,13 @@ export function AnswerCard({ turn, compact = false, focused = false, onFocus }: 
           showIcon
           message="请求失败"
           description={errorMessage}
+          action={
+            onRetry && (
+              <Button size="small" onClick={onRetry}>
+                重试
+              </Button>
+            )
+          }
           style={{ marginTop: 8 }}
         />
       </Card>
@@ -44,10 +53,30 @@ export function AnswerCard({ turn, compact = false, focused = false, onFocus }: 
   }
 
   if (!result) {
+    // 流已结束却什么都没收到。此时不能继续挂骨架屏：它会一直转下去，
+    // 既没有报错也没有重试入口，而输入框是可用的，问题很容易被忽略
+    const stalled = !streaming;
     return (
       <Card size="small" style={{ borderRadius: 8 }}>
         <StageIndicator stages={stages} running={streaming} />
-        <Skeleton active paragraph={{ rows: 2 }} title={false} style={{ marginTop: 8 }} />
+        {stalled ? (
+          <Alert
+            type="warning"
+            showIcon
+            message="未收到服务端结果"
+            description="连接在返回结果前已关闭，可重试本轮提问。"
+            action={
+              onRetry && (
+                <Button size="small" onClick={onRetry}>
+                  重试
+                </Button>
+              )
+            }
+            style={{ marginTop: 8 }}
+          />
+        ) : (
+          <Skeleton active paragraph={{ rows: 2 }} title={false} style={{ marginTop: 8 }} />
+        )}
       </Card>
     );
   }

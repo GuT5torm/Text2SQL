@@ -104,9 +104,10 @@ export interface HealthInfo {
   tables: number;
 }
 
-/** SSE 事件类型。done 为后端主动下发的终止帧。 */
+/** SSE 事件类型。done 为后端主动下发的终止帧，invalid 为解析不出内容的坏帧。 */
 export type StreamEvent =
   | { type: 'stage'; data: StageEvent }
   | { type: 'result'; data: ChatResult }
   | { type: 'error'; data: { message: string } }
+  | { type: 'invalid'; data: { message: string } }
   | { type: 'done' };
