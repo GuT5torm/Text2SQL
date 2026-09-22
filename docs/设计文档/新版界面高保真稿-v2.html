@@ -1,0 +1,482 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>问数 · Text2SQL 电商数据分析 — 新版界面设计稿 v2</title>
+<style>
+  :root{
+    --paper:#FAF9F6; --card:#FFFFFF; --line:#E7E2D9; --line-soft:#EFEAE2;
+    --ink:#211E18; --ink-2:#575145; --ink-3:#8A8377;
+    --green:#1D5B45; --green-deep:#154535; --green-bg:#EBF2EE; --green-line:#CFE0D6;
+    --amber:#BE5A28; --amber-bg:#F8ECe3; --amber-line:#EBD3BF;
+    --code-bg:#23211C; --code-ink:#D8D2C6;
+    --serif:"Source Han Serif SC","Noto Serif SC","STSong","SimSun",serif;
+    --sans:"PingFang SC","Microsoft YaHei","HarmonyOS Sans SC",system-ui,sans-serif;
+    --mono:"JetBrains Mono","Cascadia Code","SF Mono",Consolas,monospace;
+  }
+  *{margin:0;padding:0;box-sizing:border-box;}
+  html{background:var(--paper);}
+  body{font-family:var(--sans);color:var(--ink);font-size:14px;line-height:1.6;
+       -webkit-font-smoothing:antialiased;font-variant-numeric:tabular-nums;}
+  .num{font-variant-numeric:tabular-nums;}
+  .shell{width:1440px;margin:0 auto;background:var(--paper);min-height:100vh;}
+
+  /* ============ 顶栏 ============ */
+  .topbar{height:64px;display:flex;align-items:center;padding:0 28px;
+          background:rgba(250,249,246,.92);border-bottom:1px solid var(--line);
+          position:sticky;top:0;z-index:50;backdrop-filter:blur(6px);}
+  .brand{display:flex;align-items:center;gap:12px;}
+  .brand-mark{width:34px;height:34px;border-radius:9px;background:var(--green);
+              color:#F5F1E8;font-family:var(--serif);font-size:20px;font-weight:700;
+              display:flex;align-items:center;justify-content:center;}
+  .brand-name{font-family:var(--serif);font-size:19px;font-weight:700;letter-spacing:.5px;}
+  .brand-sub{font-size:12px;color:var(--ink-3);margin-top:1px;letter-spacing:.3px;}
+  .mode-chip{font-size:11.5px;color:var(--amber);background:var(--amber-bg);
+             border:1px solid var(--amber-line);border-radius:99px;padding:2px 10px;margin-left:6px;}
+  .topbar-right{margin-left:auto;display:flex;align-items:center;gap:22px;}
+  .topbar-right a{color:var(--ink-2);text-decoration:none;font-size:13.5px;}
+  .topbar-right a:hover{color:var(--ink);}
+  .btn-primary{background:var(--green);color:#F7F4EC;border:none;border-radius:8px;
+               padding:8px 18px;font-size:13.5px;cursor:pointer;font-family:var(--sans);}
+  .divider-v{width:1px;height:22px;background:var(--line);}
+
+  /* ============ 布局 ============ */
+  .layout{display:flex;align-items:flex-start;}
+  .sidebar{width:264px;flex-shrink:0;border-right:1px solid var(--line-soft);
+           padding:20px 14px 20px 20px;min-height:calc(100vh - 64px);
+           display:flex;flex-direction:column;gap:18px;position:sticky;top:64px;height:calc(100vh - 64px);}
+  .main{flex:1;min-width:0;padding:30px 0 40px;}
+
+  /* ============ 侧栏 ============ */
+  .new-btn{width:100%;display:flex;align-items:center;justify-content:center;gap:8px;
+           background:var(--card);border:1px solid var(--green-line);color:var(--green);
+           border-radius:10px;padding:10px;font-size:13.5px;cursor:pointer;font-weight:600;}
+  .search-box{background:var(--card);border:1px solid var(--line);border-radius:9px;
+              padding:8px 12px;font-size:13px;color:var(--ink-3);}
+  .side-group-title{font-size:11.5px;color:var(--ink-3);letter-spacing:1.5px;
+                    margin:6px 0 8px 6px;}
+  .session-item{padding:9px 12px;border-radius:9px;cursor:pointer;margin-bottom:2px;}
+  .session-item:hover{background:#F2EFE9;}
+  .session-item.active{background:var(--green-bg);border:1px solid var(--green-line);}
+  .session-title{font-size:13px;color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .session-meta{font-size:11.5px;color:var(--ink-3);margin-top:1px;}
+  .semantic-card{margin-top:auto;background:var(--card);border:1px solid var(--line-soft);
+                 border-radius:12px;padding:14px 16px;}
+  .semantic-card h4{font-size:12px;color:var(--ink-2);font-weight:600;margin-bottom:10px;letter-spacing:.5px;}
+  .semantic-row{display:flex;justify-content:space-between;font-size:12.5px;color:var(--ink-2);padding:3.5px 0;}
+  .semantic-row b{color:var(--ink);font-weight:600;}
+  .semantic-note{font-size:11px;color:var(--ink-3);margin-top:10px;padding-top:10px;
+                 border-top:1px dashed var(--line);line-height:1.5;}
+
+  /* ============ 主区 ============ */
+  .main-col{max-width:860px;margin:0 auto;padding:0 40px;}
+  .crumb{font-size:12px;color:var(--ink-3);margin-bottom:18px;letter-spacing:.3px;}
+  .crumb b{color:var(--ink-2);font-weight:500;}
+
+  .turn{background:var(--card);border:1px solid var(--line);border-radius:16px;
+        margin-bottom:26px;overflow:hidden;box-shadow:0 1px 2px rgba(33,30,24,.04);}
+  .turn-head{padding:22px 28px 0;display:flex;align-items:flex-start;gap:14px;}
+  .q-mark{width:30px;height:30px;border-radius:8px;background:var(--ink);color:#F5F1E8;
+          font-family:var(--serif);font-size:16px;font-weight:700;flex-shrink:0;
+          display:flex;align-items:center;justify-content:center;margin-top:2px;}
+  .q-text{font-family:var(--serif);font-size:21px;font-weight:700;line-height:1.4;letter-spacing:.3px;}
+  .q-meta{font-size:12px;color:var(--ink-3);margin-top:6px;}
+  .q-meta span{margin-right:14px;}
+
+  /* 执行链路 */
+  .pipeline{margin:18px 28px 0;padding:13px 18px;background:#F7F5F0;
+            border:1px solid var(--line-soft);border-radius:11px;
+            display:flex;align-items:center;flex-wrap:wrap;gap:4px;}
+  .pipe-node{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--ink-2);}
+  .pipe-dot{width:17px;height:17px;border-radius:50%;background:var(--green);
+            color:#fff;font-size:10.5px;display:flex;align-items:center;justify-content:center;}
+  .pipe-dot.fixed{background:var(--amber);}
+  .pipe-label{font-weight:600;}
+  .pipe-ms{color:var(--ink-3);font-size:11px;}
+  .pipe-arrow{color:#C9C3B8;margin:0 8px;font-size:12px;}
+  .pipe-flag{margin-left:auto;font-size:11.5px;color:var(--amber);background:var(--amber-bg);
+             border:1px solid var(--amber-line);border-radius:7px;padding:2px 9px;}
+
+  /* 结论卡 */
+  .verdict{margin:18px 28px 0;padding:16px 20px;background:var(--green-bg);
+           border-left:3px solid var(--green);border-radius:0 11px 11px 0;}
+  .verdict-lead{font-size:14.5px;font-weight:700;color:var(--green-deep);margin-bottom:6px;}
+  .verdict p{font-size:13.5px;color:var(--ink-2);}
+  .verdict p+p{margin-top:4px;}
+  .verdict .num-hl{color:var(--green-deep);font-weight:700;}
+  .verdict .warn-hl{color:var(--amber);font-weight:700;}
+
+  .badges{display:flex;gap:8px;margin:14px 28px 0;flex-wrap:wrap;}
+  .badge{font-size:11.5px;color:var(--ink-2);background:#F4F1EA;border:1px solid var(--line-soft);
+         border-radius:7px;padding:3px 10px;}
+  .badge b{color:var(--green);font-weight:600;}
+  .link-quiet{font-size:12px;color:var(--ink-3);cursor:pointer;padding:3px 2px;margin-left:auto;}
+  .link-quiet:hover{color:var(--green);}
+
+  /* 图表 */
+  .chart-block{margin:18px 28px 0;}
+  .chart-title{font-size:12px;color:var(--ink-3);letter-spacing:1px;margin-bottom:10px;}
+  .chart-note{font-size:11px;color:var(--ink-3);margin-top:8px;}
+
+  /* 明细表 */
+  .table-block{margin:16px 28px 0;}
+  table.detail{width:100%;border-collapse:collapse;font-size:13px;}
+  table.detail th{text-align:left;font-weight:600;color:var(--ink-3);font-size:12px;
+                  padding:8px 14px;border-bottom:1px solid var(--line);background:#FBFAF7;}
+  table.detail th.r, table.detail td.r{text-align:right;}
+  table.detail td{padding:8.5px 14px;border-bottom:1px solid var(--line-soft);color:var(--ink-2);}
+  table.detail tr:last-child td{border-bottom:none;}
+  table.detail td.strong{color:var(--ink);font-weight:600;}
+  .tag-warn{font-size:11px;color:var(--amber);background:var(--amber-bg);
+            border-radius:5px;padding:1px 7px;margin-left:8px;}
+
+  .turn-foot{display:flex;gap:20px;padding:14px 28px 18px;margin-top:16px;
+             border-top:1px solid var(--line-soft);}
+  .foot-link{font-size:12.5px;color:var(--ink-3);cursor:pointer;display:flex;align-items:center;gap:5px;}
+  .foot-link:hover{color:var(--green);}
+  .foot-link.copied{color:var(--green);}
+
+  /* SQL 面板 */
+  .sql-panel{margin:0 28px 20px;background:var(--code-bg);border-radius:12px;padding:18px 22px;}
+  .sql-head{display:flex;align-items:center;margin-bottom:10px;}
+  .sql-head span{font-size:11px;color:#8B857A;letter-spacing:1.5px;}
+  .sql-copy{margin-left:auto;font-size:11px;color:#8B857A;cursor:pointer;}
+  pre.sql{font-family:var(--mono);font-size:12.5px;line-height:1.75;color:var(--code-ink);}
+  .kw{color:#8FBFA8;} .fn{color:#D8B47C;} .str{color:#C99B7A;} .cmt{color:#6F695F;}
+
+  /* 折叠回合 */
+  .turn-collapsed{background:var(--card);border:1px solid var(--line);border-radius:14px;
+                  margin-bottom:26px;padding:16px 24px;display:flex;align-items:center;gap:14px;cursor:pointer;}
+  .tc-q{font-size:14.5px;font-weight:600;color:var(--ink-2);}
+  .tc-meta{font-size:12px;color:var(--ink-3);margin-left:auto;}
+  .tc-stage{font-size:12px;color:var(--green);background:var(--green-bg);
+            border-radius:7px;padding:2px 10px;}
+
+  /* 输入区 */
+  .composer{max-width:860px;margin:6px auto 0;padding:0 40px;}
+  .composer-card{background:var(--card);border:1.5px solid var(--line);border-radius:16px;
+                 padding:16px 18px;box-shadow:0 2px 10px rgba(33,30,24,.05);}
+  .composer-card:focus-within{border-color:var(--green);}
+  .composer-input{font-size:14.5px;color:var(--ink-3);padding:2px 4px 12px;}
+  .composer-foot{display:flex;align-items:center;}
+  .composer-hint{font-size:11.5px;color:var(--ink-3);}
+  .send-btn{margin-left:auto;background:var(--green);color:#F7F4EC;border:none;border-radius:9px;
+            padding:9px 22px;font-size:13.5px;cursor:pointer;display:flex;align-items:center;gap:7px;}
+  .chips{display:flex;gap:10px;margin-top:14px;flex-wrap:wrap;}
+  .chip{font-size:12.5px;color:var(--ink-2);background:var(--card);border:1px solid var(--line);
+        border-radius:99px;padding:7px 16px;cursor:pointer;}
+  .chip:hover{border-color:var(--green);color:var(--green);}
+
+  .design-note{max-width:860px;margin:34px auto 0;padding:14px 40px;font-size:11.5px;
+               color:var(--ink-3);line-height:1.7;}
+  .design-note b{color:var(--ink-2);}
+</style>
+</head>
+<body>
+<div class="shell">
+
+  <!-- 顶栏 -->
+  <header class="topbar">
+    <div class="brand">
+      <div class="brand-mark">问</div>
+      <div>
+        <div class="brand-name">问数 <span style="font-weight:400;font-size:15px;">· Text2SQL 电商数据分析</span></div>
+      </div>
+      <span class="mode-chip">桩验证模式</span>
+    </div>
+    <nav class="topbar-right">
+      <a href="#">评测报告</a>
+      <a href="#">语义层</a>
+      <div class="divider-v"></div>
+      <a href="#">历史会话</a>
+      <button class="btn-primary">＋ 新分析</button>
+    </nav>
+  </header>
+
+  <div class="layout">
+
+    <!-- 侧栏 -->
+    <aside class="sidebar">
+      <button class="new-btn">＋ 新建分析</button>
+      <div class="search-box">搜索会话…</div>
+
+      <div>
+        <div class="side-group-title">今天</div>
+        <div class="session-item active">
+          <div class="session-title">上月区域成交与品类退款分析</div>
+          <div class="session-meta">3 轮提问 · 16:42</div>
+        </div>
+        <div class="session-item">
+          <div class="session-title">各品类的退款率</div>
+          <div class="session-meta">7 行结果 · 09:15</div>
+        </div>
+        <div class="session-item">
+          <div class="session-title">最近三个月的下单渠道分布</div>
+          <div class="session-meta">4 行结果 · 昨天</div>
+        </div>
+      </div>
+
+      <div>
+        <div class="side-group-title">更早</div>
+        <div class="session-item">
+          <div class="session-title">上个月各区域的成交总额</div>
+          <div class="session-meta">7 行结果 · 09-14</div>
+        </div>
+        <div class="session-item">
+          <div class="session-title">近一年月度销售额趋势</div>
+          <div class="session-meta">21 行结果 · 09-13</div>
+        </div>
+      </div>
+
+      <div class="semantic-card">
+        <h4>语义层覆盖范围</h4>
+        <div class="semantic-row"><span>业务指标</span><b>7 项</b></div>
+        <div class="semantic-row"><span>数据表</span><b>6 张</b></div>
+        <div class="semantic-row"><span>分析维度</span><b>9 个</b></div>
+        <div class="semantic-note">仅支持已登记指标口径内的提问，超出口径的问题会触发反问澄清。</div>
+      </div>
+    </aside>
+
+    <!-- 主区 -->
+    <main class="main">
+      <div class="main-col">
+        <div class="crumb">会话 / <b>上月区域成交与品类退款分析</b> · 已进行 2 轮</div>
+
+        <!-- ============ 回合一 ============ -->
+        <article class="turn">
+          <div class="turn-head">
+            <div class="q-mark">问</div>
+            <div>
+              <div class="q-text">上个月各区域的成交总额</div>
+              <div class="q-meta"><span>2026-09-16 16:42</span><span>总耗时 9.3 ms</span><span>返回 7 行</span></div>
+            </div>
+          </div>
+
+          <div class="pipeline">
+            <div class="pipe-node"><span class="pipe-dot">✓</span><span class="pipe-label">意图路由</span><span class="pipe-ms">0.4ms</span></div>
+            <span class="pipe-arrow">→</span>
+            <div class="pipe-node"><span class="pipe-dot">✓</span><span class="pipe-label">语义召回</span><span class="pipe-ms">1.1ms</span></div>
+            <span class="pipe-arrow">→</span>
+            <div class="pipe-node"><span class="pipe-dot">✓</span><span class="pipe-label">SQL 生成</span><span class="pipe-ms">2.3ms</span></div>
+            <span class="pipe-arrow">→</span>
+            <div class="pipe-node"><span class="pipe-dot">✓</span><span class="pipe-label">安全校验</span><span class="pipe-ms">0.8ms</span></div>
+            <span class="pipe-arrow">→</span>
+            <div class="pipe-node"><span class="pipe-dot">✓</span><span class="pipe-label">执行查询</span><span class="pipe-ms">4.7ms</span></div>
+            <span class="pipe-flag">自动改写：补齐 LIMIT</span>
+          </div>
+
+          <div class="verdict">
+            <div class="verdict-lead">上月（2026 年 8 月）成交总额 66.74 万元，华东区以 17.12 万元居首，占七区合计的 25.6%。</div>
+            <p>华中（12.39 万，18.6%）与华南（11.08 万，16.6%）分列二三位；前三区合计占比 <span class="num-hl">60.8%</span>，区域集中度较高。西南区成交 3.42 万元，仅为华东的五分之一，是本月明显的洼地。</p>
+            <p>与 7 月（57.8 万）相比环比增长 <span class="num-hl">+15.4%</span>。统计口径为已支付订单（status = paid），不含待支付与已取消。</p>
+          </div>
+
+          <div class="badges">
+            <span class="badge">指标 <b>成交总额</b></span>
+            <span class="badge">时间 <b>2026-08-01 起至 2026-08-31 止</b></span>
+            <span class="badge">维度 <b>region 大区</b></span>
+            <span class="link-quiet">为什么是这个口径？</span>
+          </div>
+
+          <div class="chart-block">
+            <div class="chart-title">各区域成交总额（万元）</div>
+            <svg width="100%" viewBox="0 0 760 266" font-family="PingFang SC,Microsoft YaHei,sans-serif">
+              <!-- 行：7 行，行高 38 -->
+              <!-- 华东 -->
+              <text x="34" y="25" font-size="13" fill="#211E18" text-anchor="middle">华东</text>
+              <rect x="68" y="11" width="560" height="26" rx="5" fill="#1D5B45"/>
+              <text x="638" y="29" font-size="13" fill="#211E18" font-weight="700">17.12 万</text>
+              <text x="712" y="29" font-size="12" fill="#8A8377">25.6%</text>
+              <!-- 华中 -->
+              <text x="34" y="63" font-size="13" fill="#211E18" text-anchor="middle">华中</text>
+              <rect x="68" y="49" width="405" height="26" rx="5" fill="#2A6B54"/>
+              <text x="483" y="67" font-size="13" fill="#211E18" font-weight="600">12.39 万</text>
+              <text x="712" y="67" font-size="12" fill="#8A8377">18.6%</text>
+              <!-- 华南 -->
+              <text x="34" y="101" font-size="13" fill="#211E18" text-anchor="middle">华南</text>
+              <rect x="68" y="87" width="362" height="26" rx="5" fill="#377A62"/>
+              <text x="440" y="105" font-size="13" fill="#211E18" font-weight="600">11.08 万</text>
+              <text x="712" y="105" font-size="12" fill="#8A8377">16.6%</text>
+              <!-- 华北 -->
+              <text x="34" y="139" font-size="13" fill="#211E18" text-anchor="middle">华北</text>
+              <rect x="68" y="125" width="296" height="26" rx="5" fill="#4E8A72"/>
+              <text x="374" y="143" font-size="13" fill="#211E18" font-weight="600">9.07 万</text>
+              <text x="712" y="143" font-size="12" fill="#8A8377">13.6%</text>
+              <!-- 东北 -->
+              <text x="34" y="177" font-size="13" fill="#211E18" text-anchor="middle">东北</text>
+              <rect x="68" y="163" width="259" height="26" rx="5" fill="#6B9C86"/>
+              <text x="337" y="181" font-size="13" fill="#211E18" font-weight="600">7.94 万</text>
+              <text x="712" y="181" font-size="12" fill="#8A8377">11.9%</text>
+              <!-- 西北 -->
+              <text x="34" y="215" font-size="13" fill="#211E18" text-anchor="middle">西北</text>
+              <rect x="68" y="201" width="187" height="26" rx="5" fill="#8FAF9E"/>
+              <text x="265" y="219" font-size="13" fill="#211E18" font-weight="600">5.73 万</text>
+              <text x="712" y="219" font-size="12" fill="#8A8377">8.6%</text>
+              <!-- 西南 -->
+              <text x="34" y="253" font-size="13" fill="#211E18" text-anchor="middle">西南</text>
+              <rect x="68" y="239" width="112" height="26" rx="5" fill="#B5C8BC"/>
+              <text x="190" y="257" font-size="13" fill="#211E18" font-weight="600">3.42 万</text>
+              <text x="712" y="257" font-size="12" fill="#8A8377">5.1%</text>
+            </svg>
+            <div class="chart-note">已支付订单口径 · 单位：万元 · 占比为七区合计 66.74 万元中的份额</div>
+          </div>
+
+          <div class="table-block">
+            <table class="detail">
+              <thead><tr><th>大区</th><th class="r">成交总额（元）</th><th class="r">占比</th></tr></thead>
+              <tbody>
+                <tr><td class="strong">华东</td><td class="r strong">171,173.84</td><td class="r">25.6%</td></tr>
+                <tr><td class="strong">华中</td><td class="r">123,874.64</td><td class="r">18.6%</td></tr>
+                <tr><td class="strong">华南</td><td class="r">110,781.98</td><td class="r">16.6%</td></tr>
+                <tr><td class="strong">华北</td><td class="r">90,681.08</td><td class="r">13.6%</td></tr>
+                <tr><td class="strong">东北</td><td class="r">79,355.61</td><td class="r">11.9%</td></tr>
+                <tr><td class="strong">西北</td><td class="r">57,343.81</td><td class="r">8.6%</td></tr>
+                <tr><td class="strong">西南</td><td class="r">34,200.66</td><td class="r">5.1%</td></tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div class="turn-foot">
+            <span class="foot-link copied">✓ 已生成图表</span>
+            <span class="foot-link">▾ 查看执行 SQL</span>
+            <span class="foot-link">⤓ 导出明细 CSV</span>
+            <span class="foot-link" style="margin-left:auto;">追问此结果</span>
+          </div>
+        </article>
+
+        <!-- ============ 回合二 ============ -->
+        <article class="turn">
+          <div class="turn-head">
+            <div class="q-mark">问</div>
+            <div>
+              <div class="q-text">各品类的退款率</div>
+              <div class="q-meta"><span>2026-09-16 16:44</span><span>总耗时 21.6 ms</span><span>返回 8 行</span><span>修正语句 ×1</span></div>
+            </div>
+          </div>
+
+          <div class="pipeline">
+            <div class="pipe-node"><span class="pipe-dot">✓</span><span class="pipe-label">意图路由</span></div>
+            <span class="pipe-arrow">→</span>
+            <div class="pipe-node"><span class="pipe-dot">✓</span><span class="pipe-label">语义召回</span></div>
+            <span class="pipe-arrow">→</span>
+            <div class="pipe-node"><span class="pipe-dot">✓</span><span class="pipe-label">SQL 生成</span></div>
+            <span class="pipe-arrow">→</span>
+            <div class="pipe-node"><span class="pipe-dot" style="background:#BE5A28;">!</span><span class="pipe-label" style="color:#BE5A28;">安全校验</span><span class="pipe-ms">拦截 R2</span></div>
+            <span class="pipe-arrow">→</span>
+            <div class="pipe-node"><span class="pipe-dot fixed">↻</span><span class="pipe-label">修正语句</span><span class="pipe-ms">带原始报错重试</span></div>
+            <span class="pipe-arrow">→</span>
+            <div class="pipe-node"><span class="pipe-dot">✓</span><span class="pipe-label">执行查询</span></div>
+          </div>
+
+          <div class="verdict" style="background:var(--amber-bg);border-left-color:var(--amber);">
+            <div class="verdict-lead" style="color:#8F4218;">上月退款率最高的品类是智能穿戴（14.3%）与生活电器（13.7%），均超出其余品类。</div>
+            <p>已按退款订单数 ÷ 品类订单数计算，取退款率最高的 8 个品类。智能穿戴与生活电器两类超出 <span class="warn-hl">12%</span>，建议优先核查商品描述与尺码规范；乳品烘焙最低（8.8%）。</p>
+          </div>
+
+          <div class="badges">
+            <span class="badge">指标 <b>退款率</b></span>
+            <span class="badge">时间 <b>沿用上文：2026-08</b></span>
+            <span class="badge">维度 <b>category 品类</b></span>
+            <span class="link-quiet">为什么是这个口径？</span>
+          </div>
+
+          <div class="chart-block">
+            <div class="chart-title">各品类退款率 · 2026 年 8 月</div>
+            <svg width="100%" viewBox="0 0 760 304" font-family="PingFang SC,Microsoft YaHei,sans-serif">
+              <!-- 智能穿戴 14.29 -->
+              <text x="52" y="22" font-size="13" fill="#211E18" text-anchor="middle">智能穿戴</text>
+              <rect x="104" y="8" width="524" height="24" rx="5" fill="#BE5A28"/>
+              <text x="638" y="25" font-size="13" fill="#8F4218" font-weight="700">14.3%</text>
+              <!-- 生活电器 13.73 -->
+              <text x="52" y="60" font-size="13" fill="#211E18" text-anchor="middle">生活电器</text>
+              <rect x="104" y="46" width="503" height="24" rx="5" fill="#C96F3E"/>
+              <text x="617" y="63" font-size="13" fill="#8F4218" font-weight="700">13.7%</text>
+              <!-- 男装 11.54 -->
+              <text x="52" y="98" font-size="13" fill="#211E18" text-anchor="middle">男装</text>
+              <rect x="104" y="84" width="423" height="24" rx="5" fill="#1D5B45"/>
+              <text x="537" y="101" font-size="13" fill="#211E18" font-weight="600">11.5%</text>
+              <!-- 益智玩具 11.48 -->
+              <text x="52" y="136" font-size="13" fill="#211E18" text-anchor="middle">益智玩具</text>
+              <rect x="104" y="122" width="421" height="24" rx="5" fill="#2A6B54"/>
+              <text x="535" y="139" font-size="13" fill="#211E18" font-weight="600">11.5%</text>
+              <!-- 床上用品 10.81 -->
+              <text x="52" y="174" font-size="13" fill="#211E18" text-anchor="middle">床上用品</text>
+              <rect x="104" y="160" width="396" height="24" rx="5" fill="#377A62"/>
+              <text x="510" y="177" font-size="13" fill="#211E18" font-weight="600">10.8%</text>
+              <!-- 新鲜水果 9.52 -->
+              <text x="52" y="212" font-size="13" fill="#211E18" text-anchor="middle">新鲜水果</text>
+              <rect x="104" y="198" width="349" height="24" rx="5" fill="#4E8A72"/>
+              <text x="463" y="215" font-size="13" fill="#211E18" font-weight="600">9.5%</text>
+              <!-- 身体护理 9.09 -->
+              <text x="52" y="250" font-size="13" fill="#211E18" text-anchor="middle">身体护理</text>
+              <rect x="104" y="236" width="333" height="24" rx="5" fill="#6B9C86"/>
+              <text x="447" y="253" font-size="13" fill="#211E18" font-weight="600">9.1%</text>
+              <!-- 乳品烘焙 8.77 -->
+              <text x="52" y="288" font-size="13" fill="#211E18" text-anchor="middle">乳品烘焙</text>
+              <rect x="104" y="274" width="321" height="24" rx="5" fill="#8FAF9E"/>
+              <text x="435" y="291" font-size="13" fill="#211E18" font-weight="600">8.8%</text>
+            </svg>
+            <div class="chart-note">退款率 = 退款订单数 ÷ 品类订单数 · 橙色为超过 12% 的品类 · 按退款率降序取前 8</div>
+          </div>
+
+          <!-- SQL 展开 -->
+          <div class="sql-panel">
+            <div class="sql-head"><span>执行 SQL · 经安全校验修正后</span><span class="sql-copy">复制</span></div>
+            <pre class="sql"><span class="kw">SELECT</span> c.name  <span class="kw">AS</span> 品类,
+       <span class="fn">ROUND</span>(<span class="fn">COUNT</span>(<span class="kw">DISTINCT</span> r.order_id) * 1.0
+             / <span class="fn">COUNT</span>(<span class="kw">DISTINCT</span> o.id), 4) <span class="kw">AS</span> 退款率
+<span class="kw">FROM</span> orders o
+<span class="kw">JOIN</span> order_items oi <span class="kw">ON</span> oi.order_id = o.id
+<span class="kw">JOIN</span> products p   <span class="kw">ON</span> p.id = oi.product_id
+<span class="kw">JOIN</span> categories c <span class="kw">ON</span> c.id = p.category_id
+<span class="kw">LEFT JOIN</span> refunds r <span class="kw">ON</span> r.order_id = o.id
+<span class="kw">WHERE</span> o.paid_at &gt;= <span class="str">'2026-08-01'</span> <span class="kw">AND</span> o.paid_at &lt; <span class="str">'2026-09-01'</span>  <span class="cmt">-- 沿用上文时间</span>
+<span class="kw">GROUP BY</span> c.name <span class="kw">ORDER BY</span> 2 <span class="kw">DESC LIMIT</span> 8;</pre>
+          </div>
+
+          <div class="turn-foot" style="border-top:1px solid var(--line-soft);">
+            <span class="foot-link copied">✓ 已生成图表</span>
+            <span class="foot-link">▴ 收起 SQL</span>
+            <span class="foot-link">⤓ 导出明细 CSV</span>
+            <span class="foot-link" style="margin-left:auto;">追问此结果</span>
+          </div>
+        </article>
+
+        <!-- ============ 回合三（折叠态） ============ -->
+        <div class="turn-collapsed">
+          <span class="tc-stage">已完成</span>
+          <span class="tc-q">最近三个月的下单渠道分布</span>
+          <span class="tc-meta">4 行结果 · 12.1ms · app 渠道占近三月成交的 38.9%</span>
+          <span style="color:#C9C3B8;">▾</span>
+        </div>
+
+      </div>
+
+      <!-- 输入区 -->
+      <div class="composer">
+        <div class="chips">
+          <span class="chip">近一年月度销售额趋势</span>
+          <span class="chip">上季度退货最多的五个品类</span>
+          <span class="chip">华东区最近一个月的日订单量</span>
+          <span class="chip">哪些渠道的客单价最高？</span>
+        </div>
+        <div class="composer-card" style="margin-top:14px;">
+          <div class="composer-input">输入经营分析问题，仅支持语义层已登记的指标口径…</div>
+          <div class="composer-foot">
+            <span class="composer-hint">Enter 发送 · Shift + Enter 换行 · 数据为只读查询</span>
+            <button class="send-btn">发送 ➤</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="design-note">
+        <b>设计稿说明</b>：本页为「问数」新版界面高保真稿 v2。页内全部数值取自 <b>backend/data/ecommerce.db</b> 实际查询结果
+        （2026-08 各区域成交总额、各品类退款率、近三月渠道分布，查询时间 2026-09-16）；「修正语句 ×1」「安全校验拦截 R2」为守卫机制真实具备的行为状态展示，
+        非该轮实际执行记录。会话列表中的标题取自 app.db 真实提问记录。
+      </div>
+    </main>
+  </div>
+</div>
+</body>
+</html>
