@@ -1,13 +1,10 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { Alert, Button, Card, Input, Space, Tooltip, Typography, message } from 'antd';
-import { PlusOutlined } from '@ant-design/icons';
+import { Alert, Button, Space, Typography, message } from 'antd';
 import { ChatPanel } from '@/components/ChatPanel';
-import { ResultPane } from '@/components/ResultPane';
-import { SplitPane } from '@/components/SplitPane';
 import { useChatStream } from '@/hooks/useChatStream';
 import { requestDrilldown } from '@/api/drilldown';
-import { createSession, getSession, renameSession } from '@/api/session';
+import { createSession, getSession } from '@/api/session';
 import type { DrilldownRequest, SessionItem } from '@/api/types';
 
 const { Text } = Typography;
@@ -15,6 +12,10 @@ const { Text } = Typography;
 /**
  * 会话是否被换掉由 session_id 决定：换 id 就 reload 历史，
  * 同一个会话内的多轮由 useChatStream 自己累积，不重复拉取。
+ *
+ * 布局：单栏对话流。每轮回答（含图表 / 明细 / SQL）直接内联在问题之下，
+ * 不再依赖原先的「右侧结果区 + 点击聚焦」——那样问答不同框，多轮时一次
+ * 只能看一轮结果。会话的切换 / 新建 / 重命名统一交给左侧常驻侧边栏。
  */
 export function ChatPage() {
   const [params, setParams] = useSearchParams();
@@ -23,12 +24,8 @@ export function ChatPage() {
 
   const [session, setSession] = useState<SessionItem | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [editing, setEditing] = useState(false);
-  const [titleDraft, setTitleDraft] = useState('');
-  const [focusKey, setFocusKey] = useState<string | null>(null);
 
-  const { turns, streaming, send, abort, reset, loadHistory } = useChatStream();
-  const lastKey = turns.length ? turns[turns.length - 1].key : null;
+  const { turns, streaming, send, abort, loadHistory } = useChatStream();
   const loadedRef = useRef<string | null>(null);
   // FR-O-4：告警中心一键下钻带 ?q= 跳来，同一会话同一问句只自动发送一次
   const consumedQuestionRef = useRef<string | null>(null);
@@ -62,22 +59,11 @@ export function ChatPage() {
         const { turns: history, ...meta } = detail;
         setSession(meta);
         loadHistory(detail); // 内部整体替换，历史轮次不会与上一会话混在一起
-        setFocusKey(history.length ? `turn-${history[history.length - 1].id}` : null);
       })
       .catch((error: unknown) => {
         setLoadError(error instanceof Error ? error.message : String(error));
       });
   }, [sessionId, loadHistory]);
-
-  // 新一轮开始或历史加载完成后，右侧始终跟随最新一轮
-  useEffect(() => {
-    if (lastKey) setFocusKey(lastKey);
-  }, [lastKey]);
-
-  const focused = useMemo(
-    () => turns.find((t) => t.key === focusKey) ?? (turns.length ? turns[turns.length - 1] : null),
-    [turns, focusKey],
-  );
 
   const handleSend = useCallback(
     (question: string) => {
@@ -134,30 +120,6 @@ export function ChatPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId, pendingQuestion]);
 
-  const handleNew = useCallback(() => {
-    createSession()
-      .then((rec) => {
-        reset();
-        setFocusKey(null);
-        setParams({ session: rec.id });
-      })
-      .catch((error: unknown) => {
-        void message.error(error instanceof Error ? error.message : String(error));
-      });
-  }, [reset, setParams]);
-
-  const commitTitle = useCallback(() => {
-    if (!sessionId) return;
-    const next = titleDraft.trim();
-    setEditing(false);
-    if (!next || next === session?.title) return;
-    renameSession(sessionId, next)
-      .then(setSession)
-      .catch((error: unknown) => {
-        void message.error(error instanceof Error ? error.message : String(error));
-      });
-  }, [sessionId, titleDraft, session?.title]);
-
   if (loadError) {
     return (
       <Alert
@@ -177,61 +139,32 @@ export function ChatPage() {
   }
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
-      <Card size="small" style={{ borderRadius: 8, marginBottom: 12 }} styles={{ body: { padding: '8px 12px' } }}>
-        <Space style={{ width: '100%', justifyContent: 'space-between' }}>
-          {editing ? (
-            <Input
-              size="small"
-              autoFocus
-              value={titleDraft}
-              onChange={(e) => setTitleDraft(e.target.value)}
-              onBlur={commitTitle}
-              onPressEnter={commitTitle}
-              style={{ width: 260 }}
-              maxLength={120}
-            />
-          ) : (
-            <Tooltip title="点击重命名">
-              <Text
-                strong
-                style={{ cursor: 'pointer' }}
-                onClick={() => {
-                  setTitleDraft(session?.title ?? '新会话');
-                  setEditing(true);
-                }}
-              >
-                {session?.title ?? '新建会话'}
-              </Text>
-            </Tooltip>
-          )}
-          <Space size={8}>
-            <Text type="secondary" style={{ fontSize: 12 }}>
-              {session ? `已进行 ${session.turn_count} 轮` : '尚未开始'}
-            </Text>
-            <Button size="small" icon={<PlusOutlined />} onClick={handleNew}>
-              新建会话
-            </Button>
-          </Space>
-        </Space>
-      </Card>
-
-      <div style={{ flex: 1, minHeight: 0 }}>
-        <SplitPane
-          left={
-            <ChatPanel
-              turns={turns}
-              streaming={streaming}
-              onSend={handleSend}
-              onAbort={abort}
-              onFocus={setFocusKey}
-              focusedKey={focusKey}
-              onDrilldown={handleDrilldown}
-              sessionId={sessionId ?? undefined}
-            />
-          }
-          right={<ResultPane turn={focused} onDrilldown={handleDrilldown} />}
-        />
+    <div style={{ display: 'flex', justifyContent: 'center', height: '100%', minHeight: 0 }}>
+      <div
+        style={{
+          display: 'flex',
+          flexDirection: 'column',
+          height: '100%',
+          minHeight: 0,
+          width: '100%',
+          maxWidth: 860,
+        }}
+      >
+        {session && (
+          <Text type="secondary" style={{ fontSize: 12, marginBottom: 8 }}>
+            {session.title} · 已进行 {session.turn_count} 轮
+          </Text>
+        )}
+        <div style={{ flex: 1, minHeight: 0 }}>
+          <ChatPanel
+            turns={turns}
+            streaming={streaming}
+            onSend={handleSend}
+            onAbort={abort}
+            onDrilldown={handleDrilldown}
+            sessionId={sessionId ?? undefined}
+          />
+        </div>
       </div>
     </div>
   );

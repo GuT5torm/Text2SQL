@@ -84,6 +84,8 @@ export function turnToChatTurn(turn: TurnItem): ChatTurn {
     // 按 question 兜底显示，不报错。
     original_question: turn.original_question,
     rewritten_question: turn.rewritten_question,
+    // FR-E-4：修正历史。老库迁移记录缺这列时降级为空数组（不展示该项）
+    fix_history: turn.fix_history ?? [],
   };
   return {
     key: `turn-${turn.id}`,

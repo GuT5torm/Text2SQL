@@ -1,5 +1,5 @@
 import { Alert, Collapse, Descriptions, Tag, Typography } from 'antd';
-import type { GuardNotice, Slots, StageEvent } from '@/api/types';
+import type { FixHistoryItem, GuardNotice, Slots, StageEvent } from '@/api/types';
 import { SqlPanel } from './SqlPanel';
 
 const { Text } = Typography;
@@ -27,6 +27,8 @@ interface Props {
   originalQuestion?: string;
   /** FR-H-3：路由改写后的问句。空串表示未改写 */
   rewrittenQuestion?: string;
+  /** FR-E-4：修正历史。空数组或 undefined 表示未发生过修正 */
+  fixHistory?: FixHistoryItem[];
 }
 
 /**
@@ -53,6 +55,7 @@ export function TechDetails({
   slots,
   originalQuestion,
   rewrittenQuestion,
+  fixHistory,
 }: Props) {
   // FR-I-2：rejected 黄色（语句被拒绝），rewritten 蓝色（改写后放行）。
   // 老版本没有结构化通道时，退回纯字符串的黄色告警保持旧行为。
@@ -173,6 +176,33 @@ export function TechDetails({
         />
       ),
     },
+    // FR-E-4：修正历史。fix 节点每次回环追加一条，结构与 fix.py::_render_fix_history
+    // 一致。只有发生过修正的轮次才渲染，避免给正常轮次加空面板。
+    ...(fixHistory && fixHistory.length > 0
+      ? [
+          {
+            key: 'fix_history',
+            label: (
+              <span>
+                修正历史
+                <Text type="secondary" style={{ fontSize: 12, marginLeft: 6 }}>
+                  共 {fixHistory.length} 次
+                </Text>
+              </span>
+            ),
+            children: (
+              <ol style={{ margin: 0, paddingLeft: 18, lineHeight: 1.7, fontSize: 12 }}>
+                {fixHistory.map((item, i) => (
+                  <li key={`fix-${i}`}>
+                    <Text strong>阶段 {item.stage || 'unknown'}</Text>
+                    <Text type="secondary">　报错：{(item.error || '').slice(0, 300)}</Text>
+                  </li>
+                ))}
+              </ol>
+            ),
+          },
+        ]
+      : []),
     ...(hasSlots && slots
       ? [
           {

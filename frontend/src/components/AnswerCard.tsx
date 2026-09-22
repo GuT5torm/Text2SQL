@@ -61,7 +61,10 @@ export function AnswerCard({
     const kind = turn.errorKind ?? 'network';
     const copy = TERMINAL_COPY[kind];
     return (
-      <Card size="small" style={{ borderRadius: 8 }}>
+      <Card
+        size="small"
+        style={{ borderRadius: 12, borderColor: 'var(--wb-border)', boxShadow: 'var(--wb-shadow-card)' }}
+      >
         <StageIndicator stages={stages} running={false} />
         <Alert
           type={copy.alertType}
@@ -86,7 +89,10 @@ export function AnswerCard({
   if (!result) {
     const stalled = !streaming;
     return (
-      <Card size="small" style={{ borderRadius: 8 }}>
+      <Card
+        size="small"
+        style={{ borderRadius: 12, borderColor: 'var(--wb-border)', boxShadow: 'var(--wb-shadow-card)' }}
+      >
         <StageIndicator stages={stages} running={streaming} />
         {stalled ? (
           <Alert
@@ -152,8 +158,9 @@ export function AnswerCard({
     <Card
       size="small"
       style={{
-        borderRadius: 8,
-        borderColor: focused ? '#1677ff' : undefined,
+        borderRadius: 12,
+        borderColor: focused ? 'var(--wb-primary)' : 'var(--wb-border)',
+        boxShadow: 'var(--wb-shadow-card)',
         cursor: onFocus ? 'pointer' : undefined,
       }}
       onClick={onFocus}
@@ -364,6 +371,7 @@ export function AnswerCard({
                     slots={result.slots ?? null}
                     originalQuestion={turn.originalQuestion ?? turn.question}
                     rewrittenQuestion={turn.rewrittenQuestion ?? result.rewritten_question ?? ''}
+                    fixHistory={result.fix_history ?? []}
                   />
                 ),
               },

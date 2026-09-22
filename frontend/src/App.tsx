@@ -1,12 +1,16 @@
-import { useEffect, useState } from 'react';
-import { HashRouter, Navigate, Route, Routes } from 'react-router-dom';
-import { Badge, Button, ConfigProvider, Layout, Popover, Space, Tag, Tooltip, Typography } from 'antd';
+import { useCallback, useEffect, useState } from 'react';
+import { HashRouter, Navigate, Route, Routes, useNavigate, useSearchParams } from 'react-router-dom';
+import { ConfigProvider, Layout, Popover, Space, Tag, Tooltip, Typography } from 'antd';
 import zhCN from 'antd/locale/zh_CN';
 import { AlertCenter } from '@/pages/AlertCenter';
 import { ChatPage } from '@/pages/ChatPage';
 import { HistoryPage } from '@/pages/HistoryPage';
 import { SharePage } from '@/pages/SharePage';
-import { fetchHealth } from '@/api/session';
+import { SessionSidebar } from '@/components/SessionSidebar';
+import { SettingsModal } from '@/components/SettingsModal';
+import { DataSourceModal } from '@/components/DataSourceModal';
+import { createSession, fetchHealth } from '@/api/session';
+import type { DatasourceConnectResult } from '@/api/datasource';
 import type { HealthInfo } from '@/api/types';
 
 const { Header, Content } = Layout;
@@ -51,28 +55,14 @@ function ReadOnlyBadge() {
   );
 }
 
-function Nav({ alertUnread }: { alertUnread: number }) {
-  // 用一个最简单的 pathname 判断标识当前路由，避免引入 react-router 的 hooks
-  // 让 Shell 组件的可读性下降。历史页由 HistoryPage 自身渲染顶栏态。
-  return (
-    <Space size={4}>
-      <Button type="text" href="#/">
-        对话
-      </Button>
-      <Button type="text" href="#/history">
-        历史会话
-      </Button>
-      <Badge count={alertUnread} size="small" offset={[-6, 4]}>
-        <Button type="text" href="#/alerts">
-          告警订阅
-        </Button>
-      </Badge>
-    </Space>
-  );
-}
-
 function Shell() {
   const [health, setHealth] = useState<HealthInfo | null>(null);
+  const [collapsed, setCollapsed] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [datasourceOpen, setDatasourceOpen] = useState(false);
+  const navigate = useNavigate();
+  const [params] = useSearchParams();
+  const sessionId = params.get('session');
 
   useEffect(() => {
     let timer: number | undefined;
@@ -88,59 +78,119 @@ function Shell() {
     return () => window.clearInterval(timer);
   }, []);
 
+  // 新建对话：建好会话后直接导航过去，由 ChatPage 加载空历史。
+  const handleNew = useCallback(() => {
+    createSession()
+      .then((rec) => navigate(`/?session=${encodeURIComponent(rec.id)}`))
+      .catch(() => undefined);
+  }, [navigate]);
+
+  // 设置保存后刷新健康状态，让顶栏模式标识立即更新
+  const handleSettingsSaved = useCallback(() => {
+    fetchHealth()
+      .then(setHealth)
+      .catch(() => undefined);
+  }, []);
+
+  // 数据源切换后刷新健康状态，让顶栏表数 / 模式标识立即更新
+  const handleDatasourceConnected = useCallback((_result: DatasourceConnectResult) => {
+    fetchHealth()
+      .then(setHealth)
+      .catch(() => undefined);
+  }, []);
+
   return (
-    <Layout style={{ height: '100vh', background: '#f5f5f5' }}>
-      <Header
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          background: '#fff',
-          borderBottom: '1px solid #f0f0f0',
-          padding: '0 20px',
-          height: 56,
-        }}
-      >
-        <Space size={12}>
-          <Text strong style={{ fontSize: 16 }}>
-            Text2SQL 电商数据分析 Agent
-          </Text>
-          <ReadOnlyBadge />
-          {health && (
-            <Tooltip
-              title={
-                health.llm_mock
-                  ? '未配置 LLM_API_KEY，生成的 SQL 来自固定模板，配置密钥后重启即可切换'
-                  : `模型 ${health.model} · 指标 ${health.metrics} 个 · 表 ${health.tables} 张`
-              }
+    <div style={{ display: 'flex', height: '100vh', background: 'var(--wb-bg)' }}>
+      <SessionSidebar
+        activeId={sessionId}
+        collapsed={collapsed}
+        onToggle={() => setCollapsed((v) => !v)}
+        onSelect={(id) => navigate(`/?session=${encodeURIComponent(id)}`)}
+        onNew={handleNew}
+        onOpenDatasource={() => setDatasourceOpen(true)}
+        onOpenSettings={() => setSettingsOpen(true)}
+        alertUnread={health?.alert_unread ?? 0}
+      />
+      <Layout style={{ flex: 1, minWidth: 0, background: 'var(--wb-bg)' }}>
+        <Header
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            background: 'var(--wb-surface)',
+            borderBottom: '1px solid var(--wb-border)',
+            boxShadow: '0 1px 3px rgba(0, 0, 0, 0.04)',
+            padding: '0 20px',
+            height: 56,
+          }}
+        >
+          <Space size={12}>
+            <div
+              style={{
+                width: 30,
+                height: 30,
+                borderRadius: 8,
+                background: 'linear-gradient(135deg, #2f6bff, #6f9bff)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                color: '#fff',
+                fontWeight: 700,
+                fontSize: 12,
+                letterSpacing: 0.5,
+              }}
             >
-              <Tag color={health.llm_mock ? 'orange' : 'green'} style={{ borderRadius: 4 }}>
-                {health.llm_mock ? '桩实现模式' : health.model}
-              </Tag>
-            </Tooltip>
-          )}
-          {health?.alert_unhealthy && (
-            <Tooltip
-              title={`异常订阅连续求值失败 ${health.alert_consecutive_failures} 次（阈值 ${health.alert_failures_threshold}），请检查规则与链路`}
-            >
-              <Tag color="red" style={{ borderRadius: 4 }}>
-                告警求值异常
-              </Tag>
-            </Tooltip>
-          )}
-        </Space>
-        <Nav alertUnread={health?.alert_unread ?? 0} />
-      </Header>
-      <Content style={{ padding: 16, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
-        <Routes>
-          <Route path="/" element={<ChatPage />} />
-          <Route path="/history" element={<HistoryPage />} />
-          <Route path="/alerts" element={<AlertCenter />} />
-          <Route path="/share/:token" element={<SharePage />} />
-          <Route path="*" element={<Navigate to="/" replace />} />
-        </Routes>
-      </Content>
-    </Layout>
+              T2
+            </div>
+            <Text strong style={{ fontSize: 16 }}>
+              Text2SQL 电商数据分析 Agent
+            </Text>
+            <ReadOnlyBadge />
+            {health && (
+              <Tooltip
+                title={
+                  health.llm_mock
+                    ? '当前为桩实现模式：未配置密钥，SQL 来自固定模板。在「设置」中填入密钥并关闭桩实现即可切换'
+                    : `模型 ${health.model} · 指标 ${health.metrics} 个 · 表 ${health.tables} 张`
+                }
+              >
+                <Tag color={health.llm_mock ? 'orange' : 'green'} style={{ borderRadius: 4 }}>
+                  {health.llm_mock ? '桩实现模式' : health.model}
+                </Tag>
+              </Tooltip>
+            )}
+            {health?.alert_unhealthy && (
+              <Tooltip
+                title={`异常订阅连续求值失败 ${health.alert_consecutive_failures} 次（阈值 ${health.alert_failures_threshold}），请检查规则与链路`}
+              >
+                <Tag color="red" style={{ borderRadius: 4 }}>
+                  告警求值异常
+                </Tag>
+              </Tooltip>
+            )}
+          </Space>
+        </Header>
+        <Content style={{ padding: 16, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
+          <Routes>
+            <Route path="/" element={<ChatPage />} />
+            <Route path="/history" element={<HistoryPage />} />
+            <Route path="/alerts" element={<AlertCenter />} />
+            <Route path="/share/:token" element={<SharePage />} />
+            <Route path="*" element={<Navigate to="/" replace />} />
+          </Routes>
+        </Content>
+      </Layout>
+      <SettingsModal
+        open={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+        onSaved={handleSettingsSaved}
+      />
+      <DataSourceModal
+        open={datasourceOpen}
+        onClose={() => setDatasourceOpen(false)}
+        onConnected={handleDatasourceConnected}
+      />
+    </div>
   );
 }
 
@@ -148,7 +198,7 @@ export default function App() {
   return (
     <ConfigProvider
       locale={zhCN}
-      theme={{ token: { colorPrimary: '#1677FF', borderRadius: 8, fontSize: 14 } }}
+      theme={{ token: { colorPrimary: '#2f6bff', borderRadius: 8, fontSize: 14 } }}
     >
       <HashRouter>
         <Shell />

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Button, Empty, Input, Space, Tag, Typography } from 'antd';
+import { Button, Input, Space, Typography } from 'antd';
 import { SendOutlined } from '@ant-design/icons';
 import type { ChatTurn } from '@/hooks/useChatStream';
 import type { DrilldownRequest } from '@/api/types';
@@ -12,9 +12,6 @@ interface Props {
   streaming: boolean;
   onSend: (question: string) => void;
   onAbort: () => void;
-  /** 点击历史卡片切换右侧结果区展示的轮次 */
-  onFocus?: (key: string) => void;
-  focusedKey?: string | null;
   /** 下钻入口（FR-L-2）。由页面把槽位换成问句后重新提交 */
   onDrilldown?: (slots: DrilldownRequest) => void;
   /** 当前会话 ID，透传给 AnswerCard 让其渲染 FeedbackBar / ExportMenu */
@@ -36,8 +33,6 @@ export function ChatPanel({
   streaming,
   onSend,
   onAbort,
-  onFocus,
-  focusedKey,
   onDrilldown,
   sessionId,
 }: Props) {
@@ -59,24 +54,45 @@ export function ChatPanel({
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
       <div style={{ flex: 1, overflowY: 'auto', padding: '4px 4px 12px', minHeight: 0 }}>
         {turns.length === 0 && (
-          <Empty
-            image={Empty.PRESENTED_IMAGE_SIMPLE}
-            description={
-              <Space direction="vertical" size={6}>
-                <Text type="secondary">还没有提问，可以从下面选一个</Text>
-                {EXAMPLES.map((q) => (
-                  <Tag
-                    key={q}
-                    style={{ cursor: 'pointer', borderRadius: 4 }}
-                    onClick={() => !streaming && onSend(q)}
-                  >
-                    {q}
-                  </Tag>
-                ))}
-              </Space>
-            }
-            style={{ marginTop: 48 }}
-          />
+          <div style={{ maxWidth: 620, margin: '9vh auto 0', textAlign: 'center', padding: '0 8px' }}>
+            <div
+              style={{
+                width: 52,
+                height: 52,
+                borderRadius: 14,
+                background: 'linear-gradient(135deg, #2f6bff, #6f9bff)',
+                display: 'inline-flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                color: '#fff',
+                fontWeight: 700,
+                fontSize: 20,
+                marginBottom: 18,
+              }}
+            >
+              T2
+            </div>
+            <div style={{ fontSize: 22, fontWeight: 600, color: 'var(--wb-text)', marginBottom: 8 }}>
+              用自然语言分析你的业务数据
+            </div>
+            <Text type="secondary" style={{ fontSize: 14 }}>
+              描述一个经营问题，自动生成 SQL、图表与口径说明。可以从下面的示例开始。
+            </Text>
+            <div
+              style={{
+                display: 'grid',
+                gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
+                gap: 10,
+                marginTop: 26,
+              }}
+            >
+              {EXAMPLES.map((q) => (
+                <div key={q} className="wb-suggest" onClick={() => !streaming && onSend(q)}>
+                  <Text style={{ fontSize: 13, color: 'var(--wb-text)' }}>{q}</Text>
+                </div>
+              ))}
+            </div>
+          </div>
         )}
 
         {turns.map((turn) => (
@@ -84,15 +100,16 @@ export function ChatPanel({
             <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 8 }}>
               <div
                 style={{
-                  maxWidth: '86%',
-                  padding: '8px 12px',
-                  background: '#1677ff',
+                  maxWidth: '82%',
+                  padding: '9px 14px',
+                  background: 'var(--wb-primary)',
                   color: '#fff',
-                  borderRadius: 8,
+                  borderRadius: 12,
                   fontSize: 14,
                   lineHeight: 1.6,
                   whiteSpace: 'pre-wrap',
                   wordBreak: 'break-word',
+                  boxShadow: '0 1px 2px rgba(47, 107, 255, 0.25)',
                 }}
               >
                 {turn.question}
@@ -100,9 +117,6 @@ export function ChatPanel({
             </div>
             <AnswerCard
               turn={turn}
-              compact
-              focused={turn.key === focusedKey}
-              onFocus={onFocus ? () => onFocus(turn.key) : undefined}
               onRetry={streaming ? undefined : () => onSend(turn.question)}
               onDrilldown={onDrilldown}
               sessionId={sessionId}
@@ -112,7 +126,7 @@ export function ChatPanel({
         <div ref={bottomRef} />
       </div>
 
-      <div style={{ borderTop: '1px solid #f0f0f0', paddingTop: 8 }}>
+      <div style={{ borderTop: '1px solid var(--wb-border)', paddingTop: 10, paddingBottom: 4 }}>
         <Space.Compact style={{ width: '100%' }}>
           <Input.TextArea
             value={draft}

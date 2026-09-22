@@ -172,6 +172,15 @@ export interface SqlExplainResponse {
   error?: string;
 }
 
+/**
+ * FR-E-4 修正历史条目。fix 节点每次修正追加一条，结构 [{stage, error}]。
+ * stage 取自当时出错节点的名字（execute / validate），error 截断到 300 字。
+ */
+export interface FixHistoryItem {
+  stage: string;
+  error: string;
+}
+
 /** SSE 的 result 帧，也是 /api/chat/sync 的返回体。 */
 export interface ChatResult {
   status: ResultStatus;
@@ -248,6 +257,8 @@ export interface ChatResult {
   original_question?: string;
   /** FR-H-3：路由改写后的问句。未改写时为空串，前端按「未改写」降级。 */
   rewritten_question?: string;
+  /** FR-E-4：修正历史。空数组表示未发生过修正（fix 节点未触发） */
+  fix_history?: FixHistoryItem[];
 }
 
 export interface SessionItem {
@@ -290,6 +301,8 @@ export interface TurnItem {
   /** FR-H-3：用户原话与改写问句。老库迁移记录缺这两列时按 undefined 降级 */
   original_question?: string;
   rewritten_question?: string;
+  /** FR-E-4：修正历史。空数组表示未发生过修正 */
+  fix_history?: FixHistoryItem[];
 }
 
 export interface SessionDetail extends SessionItem {
