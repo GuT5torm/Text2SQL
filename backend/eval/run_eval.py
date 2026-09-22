@@ -37,6 +37,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import json
+import re
 import sys
 from dataclasses import dataclass, field
 from datetime import date, datetime
@@ -59,7 +60,7 @@ from app.db.masking import mask_result  # noqa: E402
 from app.db.repository import AlertRuleRecord  # noqa: E402
 from app.llm.schemas import SqlDraft  # noqa: E402
 from app.observability import counters, reset_counters  # noqa: E402
-from app.semantic.loader import Catalog, load_catalog, recall  # noqa: E402
+from app.semantic.loader import UNSUPPORTED_CAVEAT_PREFIX, Catalog, load_catalog, recall  # noqa: E402
 
 T2SQL_ROOT = BACKEND_DIR.parent
 CASES_PATH = Path(__file__).resolve().parent / "cases.yaml"
@@ -109,6 +110,8 @@ EXPECT_FIELDS: dict[str, set[str]] = {
         "status", "min_rows", "chart_type", "requires_llm",
         "dimensions", "granularity", "sql_contains", "must_join",
         "filters", "order_by", "top_n",
+        # FR-D-4 补充：期望 caveats 里出现/不出现未收录维度提示
+        "dimension_caveat",
     },
     "safety": {
         "inject_sql", "blocked", "status", "max_rows",
@@ -291,18 +294,59 @@ def _has_granularity(sql: str, granularity: str) -> bool:
     return any(re.search(p, sql, flags=re.IGNORECASE) for p in patterns)
 
 
-def _has_dimensions(sql: str, columns: list[str], dimensions: list[str]) -> list[str]:
+_FUNCTION_TOKENS = {"date", "datetime", "strftime", "julianday", "coalesce", "cast", "case"}
+
+
+def _columns_from_expression(expression: str) -> set[str]:
+    """从语义层维度的 expression 里抽出物理列名候选。
+
+    `date(orders.created_at)` -> {"created_at"}；`users.level` -> {"level"}。
+    函数名与表名 Kyiv Advisor 一并丢弃，只留下末段标识符。
+    """
+    found: set[str] = set()
+    for token in re.findall(r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?", expression):
+        tail = token.split(".")[-1]
+        if tail.lower() not in _FUNCTION_TOKENS:
+            found.add(tail.lower())
+    return found
+
+
+def _has_dimensions(
+    sql: str,
+    columns: list[str],
+    dimensions: list[str],
+    catalog: Any = None,
+) -> list[str]:
     """返回 dimensions 中未在 sql 与结果集列名里出现的项。
 
-    两处都查：SQL 的 SELECT/GROUP BY 列表（直接子串匹配），以及结果集
-    列名（来自 result['columns']）。两处任一命中即视为该维度已写入。
+    两处都查：SQL 的 SELECT/GROUP BY 列表（子串匹配），以及结果集列名。
+
+    catalog 用于把语义层的维度标识名解析成物理列：`order_date` 的 expression
+    是 `date(orders.created_at)`，模型写的是 `date(o.created_at)`，两者语义
+    等价但字面不同。只按标识名匹配会把「用了正确列」判成「没用」，2026-09-22
+    实测 p006 / p008 就栽在这里。解析后同时接受：标识名、expression 里的
+    物理列名、以及中文 display（模型常用 display 起别名）。
     """
     sql_lower = sql.lower()
     cols_lower = [str(c).lower() for c in columns]
-    return [
-        d for d in dimensions
-        if d.lower() not in sql_lower and d.lower() not in cols_lower
-    ]
+    by_name = catalog.dimension_by_name if catalog is not None else {}
+    missing: list[str] = []
+    for d in dimensions:
+        candidates: set[str] = {d.lower()}
+        item = by_name.get(d)
+        if item is not None:
+            # dimension_by_name 里可能是 dict（loader 直接加载的形态），
+            # 也可能是 dataclass，两种都取到值即可。
+            get = item.get if isinstance(item, dict) else lambda k: getattr(item, k, None)
+            expression = get("expression") or ""
+            if expression:
+                candidates |= _columns_from_expression(expression)
+            display = get("display")
+            if display:
+                candidates.add(str(display).lower())
+        if not any(c in sql_lower or c in cols_lower for c in candidates):
+            missing.append(d)
+    return missing
 
 
 def _has_source_tables(actual: list[str], expected: list[str]) -> list[str]:
@@ -507,6 +551,7 @@ def run_pipeline(cases: list[dict[str, Any]], container: Any) -> list[CaseOutcom
             "retry_count": result.get("retry_count"),
             "stages": [s.get("node") for s in result.get("stages") or []],
             "error": result.get("sql_error") or result.get("error_message"),
+            "caveats": result.get("caveats") or [],
         }
         reasons: list[str] = []
 
@@ -527,7 +572,9 @@ def run_pipeline(cases: list[dict[str, Any]], container: Any) -> list[CaseOutcom
         if status == "ok":
             want_dims = expect.get("dimensions")
             if want_dims:
-                missing_dims = _has_dimensions(sql, result.get("columns") or [], want_dims)
+                missing_dims = _has_dimensions(
+                    sql, result.get("columns") or [], want_dims, container.catalog
+                )
                 if missing_dims:
                     reasons.append(
                         f"维度：SQL 与结果集均未出现 {missing_dims}（期望来自语义层召回）"
@@ -547,6 +594,23 @@ def run_pipeline(cases: list[dict[str, Any]], container: Any) -> list[CaseOutcom
                 missing_joins = _must_join(sql, want_joins)
                 if missing_joins:
                     reasons.append(f"JOIN：SQL 未与 {missing_joins} 表连接")
+
+        # 未收录维度提示（FR-D-4 补充）：这条断言与链路是否跑通无关，
+        # 因此放在 status 判断之外——系统应当在不报错时也把口径风险说清楚。
+        want_caveat = expect.get("dimension_caveat")
+        if want_caveat is not None:
+            hit = [
+                c
+                for c in (result.get("caveats") or [])
+                if c.startswith(UNSUPPORTED_CAVEAT_PREFIX)
+            ]
+            if want_caveat and not hit:
+                reasons.append(
+                    "未收录维度：期望给出口径提示，实际 caveats 里没有"
+                    f"（{result.get('caveats') or '空'}）"
+                )
+            if not want_caveat and hit:
+                reasons.append(f"未收录维度：本轮不该报口径提示，实际报了 {hit}")
 
         outcomes.append(
             CaseOutcome(

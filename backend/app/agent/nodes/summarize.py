@@ -15,6 +15,7 @@ from app.agent.prompts import format_rows, render_prompt
 from app.agent.state import AgentState, new_stage
 from app.llm.gateway import Gateway, LLMError
 from app.llm.schemas import Insight
+from app.semantic.loader import UNSUPPORTED_CAVEAT_PREFIX
 from langchain_core.messages import AIMessage
 
 logger = logging.getLogger(__name__)
@@ -217,7 +218,12 @@ def summarize_node(state: AgentState, *, gateway: Gateway) -> dict[str, Any]:
         parts.append("\n".join(f"- {h}" for h in insight.highlights))
     answer = "\n\n".join(p for p in parts if p)
 
-    used_caveats = insight.caveats or caveats
+    used_caveats = list(insight.caveats or caveats)
+    # FR-D-4 补充：未收录维度提示来自确定性判定，不是模型的自我陈述。
+    # 模型另给了结论侧 caveat 时会整体替换，这里补回来，避免关键信息被挤掉。
+    for item in caveats:
+        if item.startswith(UNSUPPORTED_CAVEAT_PREFIX) and item not in used_caveats:
+            used_caveats.append(item)
     attempts = int(state.get("retry_count") or 0)
 
     return {

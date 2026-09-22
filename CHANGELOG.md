@@ -451,3 +451,201 @@ P2-T7 修掉 `stages` 跨轮累积后，`docs/` 下仍有表述停在修复前�
 
 报告第五节「待实测确认的两条」中，Vite dev 代理是否缓存 SSE 已在 T36 验证：页面经 5173 代理取数，七个阶段逐个渲染，代理未把进度攒到最后。另一条——ECharts 在 `SplitPane` 拖到极窄后拉宽是否残留空白——仍未验证。
 
+---
+
+## T37　FRD v1.2.0 实施（顺序 0-8 + 收尾批 1/2）
+
+提交：`f83896a` 后端实施（69 files, +12795 -1590）／`7220ec2` 前端实施（33 files, +4241 -126）／`3856d61` 设计文档（17 files, +3145）
+
+实施日期：2026-09-15 至 2026-09-22　｜　需求条数：68（含 FR-I-5 行列权限范围外 1 条）
+
+### 范围
+
+按 FRD v1.2.0 实施顺序 0–8 共 9 批交付，外加两轮收尾批覆盖未被实施顺序编入的 7 条需求（FR-E-4 / FR-F-1 / FR-F-2 / FR-H-1 / FR-H-3 / FR-H-4 / FR-H-5）。
+
+### 完成度
+
+| 状态 | 条数 | 占比 |
+|---|---|---|
+| 完全交付 | 62 | 91.2% |
+| 部分交付 | 5 | 7.4% |
+| 未交付 | 0 | 0 |
+| 范围外 | 1 | 1.5% |
+
+部分交付 5 条均依赖外部条件：
+- FR-A-1 / FR-A-2：跨轮 eval 用例需真实模型密钥
+- FR-E-4：`fix_history` 落库但前端入口交付待补（已在 T38 补齐）
+- FR-H-1：Checkpointer 默认改 sqlite（已在 T38 改）
+- FR-H-5：归档保留期 90 天自动清理（已在 T38 实现）
+
+### 主要交付
+
+- 后端新增模块：baselines / consistency / findings / drilldown / alert_eval / candidate_rerank / masking / observability / sql_explain 等
+- 9 节点主链 + enrich 旁路 + fix_empty 独立分支；`_after_execute` 路由区分报错与空结果
+- Turn 表新增 8 列含老库自动迁移；6 个独立接口（drilldown / feedback / share / alerts / sql_explain 等）
+- 前端 TechDetails 折叠面板统一收口研发信息；HistoryPage 支持导出 PPTX（图嵌入）与 Markdown
+- 评测十组：recall / pipeline / safety / datalineage / baseline / drilldown / robust / alert / multiturn / advanced
+
+### 基线（2026-09-22 实跑）
+
+| 项 | 命令 | 结果 |
+|---|---|---|
+| 后端全量 | `pytest -q` | 431 passed in 50.73s |
+| 前端类型 | `npx tsc --noEmit` | 0 error |
+| 前端构建 | `npx vite build` | 通过（gzip 合计约 850 KB） |
+| eval | `python eval/run_eval.py` | 十组，recall 37/37、pipeline 6/9、safety 8/8、datalineage 5/5、baseline 6/6、drilldown 7/7、robust 2/2、alert 4/4、multiturn 5/5、advanced 3 跳过 |
+
+### 已知偏离（已在验收文档中记录）
+
+- 桩实现 SQL 模板不带时间谓词，FR-D-5 核对器会标「时间区间不一致」橙色 Tag
+- eval 少 feedback / comparison / share 三组名（断言落在 pytest 与 baseline 组）
+- 前端无单测框架（部分以「前端单测」作自动断言的需求，断言落在手测与后端集成测试）
+
+### 验收文档
+
+- `docs/设计文档/FRD-进度核查-2026-09-21.md`：批次维度
+- `docs/设计文档/FRD-完成度核查-2026-09-21.md`：需求维度逐条
+- `docs/设计文档/FRD-收尾批1-验收概览.md`：FR-C-1 / FR-D-2 / FR-B-1 / FR-N-2
+- `docs/设计文档/FRD-收尾批2-验收概览.md`：FR-F-1 / FR-F-2 / FR-H-3 / FR-H-4
+
+---
+
+## T38　FRD 部分交付收尾
+
+提交：本批统一一个 commit
+
+实施日期：2026-09-22　｜　范围：T37 中 5 条部分交付的 3 条收尾
+
+### 改动
+
+- **FR-E-4 fix_history 前端入口**：`graph.py::summarize_result` 暴露 `fix_history` 字段；前端 `types.ts` / `useChatStream` 同步；`TechDetails` 新增「修正历史」折叠项，按 `1. 阶段 X 报错：...` 列出每轮修正痕迹
+- **FR-H-1 Checkpointer 默认改 sqlite**：`config.py` 默认值由 `memory` 改 `sqlite`，跨重启保留会话状态；旧库迁移与新库初始化均已在 checkpointer.py 覆盖
+- **FR-H-5 归档保留期自动清理**：`config.py` 新增 `archived_retention_days: int = 90`；`sqlite_repo.py` 新增 `purge_expired_archived`；`/api/session` 列表与归档接口触发惰性清理（列表请求时顺带扫一次，避免引入定时任务）
+
+### 验证
+
+- pytest 431 passed
+- tsc 0 error
+- 浏览器实测「修正历史」面板（构造一次会触发改写的轮次）
+
+### 余下两条（不可纯代码收尾）
+
+- FR-A-1 / FR-A-2：跨轮 eval 用例需真实模型密钥，桩改写只是关键词标记，断言无意义
+
+
+
+---
+
+## T39　未收录维度的显式提示（FR-D-4 补充）
+
+提交：本批统一一个 commit
+
+实施日期：2026-09-22　｜　范围：维度未命中的识别与提示，不含 T38 遗留项的更正
+
+### 起因
+
+真实模型首次跑通后，`flow-p009`（上个月各种支付方式的下单人数）暴露一类
+看着正常、实则答非所问的错误：库里没有支付相关字段，模型就近用 `channel`
+顶替，SQL 能执行、4 行结果、图表正常、全流程零报错，但答案与问题无关。
+FR-D-4 原本只覆盖「指标口径未命中」（`metric_used` 为空时的前端呈现），
+维度这一侧是需求空白，因此本次是补充而非回填。
+
+### 改动
+
+- **新增 `app/semantic/dimension_check.py`**：从句式明确的分组诉求（「各 X」
+  「按 X 分组」）里抽取维度词，对照「已登记词汇池」判断本库是否支持。
+  词汇池由 `Catalog.vocabulary` 承载，`load_catalog` 时构建一次。判定保守：
+  只在句式给出分组意图时抽词，且抽到的词剥掉已知片段后仍有残留才判未收录
+- **`loader.py`**：`SemanticHit` 增加 `unsupported_dimensions`；`caveats()`
+  追加带 `UNSUPPORTED_CAVEAT_PREFIX` 前缀的条目；`render_context()` 增加
+  「本库未收录的维度」段落，明确禁止近义字段顶替与字面量伪造列
+- **`retrieve.py`**：`retrieved` 透出 `unsupported_dimensions`，阶段详情里留痕
+- **`graph.py::summarize_result`**：`_finalize_caveats` 在拿到真实 SQL 后，把
+  通用提示替换成指明实际分组字段的文案；拿不到分组字段时保留原文
+- **`summarize.py`**：模型另给结论侧 caveat 时会整体替换库存提示，补回确定性
+  判定的那一条，避免关键信息被挤掉
+- **`eval`**：`EXPECT_FIELDS["pipeline"]` 登记 `dimension_caveat`；p009 期望
+  true，p001 / p007 期望 false 作为误报防线
+
+### 验证
+
+- 误报率：评测集 83 条问句里只触发 p009 一条，其余均为已登记维度
+- 行为对比（真实模型，同一条问句）：
+
+  | 阶段 | 生成的 SQL |
+  |---|---|
+  | 修复前 | `SELECT o.channel AS 支付方式, ... GROUP BY o.channel`（顶替，无提示） |
+  | 第一版 | `SELECT '未知' AS 支付方式, ...`（不顶替，但伪造一列） |
+  | 最终 | `SELECT COUNT(*) AS 下单人数 FROM orders WHERE ...`（按全量出数）+ 明确提示 |
+
+- pipeline 组 10/10（真实模型）；pytest 475 passed（桩模式下全量）
+- 新单测 `tests/test_dimension_check.py` 44 条，负例占比高于正例
+
+### 已知边界
+
+- 抽词依赖中文句式，未覆盖的措辞会漏报。宁可漏报：误报会把正确的
+  口径查询标成有风险，比静默放过更糟
+- 检测只在「有明确分组意图」时介入；过滤条件里提到未知维度（如「微信支付的
+  订单」）目前不在覆盖范围内
+
+---
+
+## T40　运行时配置与会话管理界面
+
+提交：本批统一一个 commit
+
+实施日期：2026-09-22　｜　范围：界面侧能力补齐，不含 FRD 需求编号
+
+### 起因
+
+验收演示暴露两处「只能改配置文件」的盲区：`LLM_API_KEY` 与业务库路径都只能
+手改 `.env`（换库还要手编语义层 YAML），且 `get_settings` / `get_container`
+均为 `lru_cache` 单例，运行中改 `.env` 不生效。本批把这两件事做成界面能力，
+并顺带重构对话界面与会话管理。
+
+### 改动
+
+**运行时设置（API Key / 模型 / 桩实现）**
+
+- `config.py`：新增 `apply_runtime_settings`，按白名单改写 `.env` 对应行（保留
+  注释与其他行，含 `#` / 空格的值加双引号）后清 `get_settings` 缓存
+- `api/settings.py`：`GET /api/settings` 只回安全子集（`has_api_key` 布尔，密钥
+  不回传明文）；`POST` 写盘后调 `reset_container()` 热重载
+- `main.py` 注册路由；前端 `api/settings.ts` + `components/SettingsModal.tsx`
+
+**数据源连接（接入新库）**
+
+- `db/introspect.py`：方言无关内省（表 / 字段 / 类型 / PK / FK）+
+  `build_semantic_draft` 生成 tables / metrics / synonyms / baseline_rules /
+  finding_rules 草稿；表结构为库内事实，指标与维度为启发式推测并标「草稿·需人工确认口径」
+- `db/generic_repo.py`：PostgreSQL / MySQL 只读 `QueryRepository`
+- `api/datasource.py`：`POST /test`（只读内省、不改配置）、`POST /connect`
+  （生成草稿 → 备份现有 5 份 YAML 为 `.bak-<时间戳>` → 写盘 → 热重载）
+- `config.py` 白名单加 `business_db_path` / `sql_dialect` / `business_db_dsn`；
+  `deps.build_container` 按方言切 Sqlite / Generic 实现
+- 前端 `api/datasource.ts` + `components/DataSourceModal.tsx`
+
+**界面重构与会话管理**
+
+- 三栏对话壳：新增常驻左侧会话侧边栏（`SessionSidebar`），主区改居中单栏对话流，
+  每轮回答内联图表与明细；删除不再使用的 `SplitPane` / `ResultPane`
+- 视觉刷新：`global.css` 引入设计 token（背景 / 侧边栏 / 边框 / 主色 / 圆角 / 阴影）
+  与辅助类；顶栏品牌化并去掉导航，数据源 / 设置 / 告警订阅 / 历史管理收拢进侧边栏
+- 会话列表按时间分组（今天 / 昨天 / 7 天内 / 30 天内 / 更早，对齐 DeepSeek）
+- 会话列表多选批量删除（进入多选后整行勾选，工具条提供全选与删除）
+
+### 验证
+
+- `pytest -q`：475 passed
+- `tsc --noEmit`：0 error
+- 设置热重载实测：`POST {llm_mock:false}` 后 `.env` 即时改写、`/api/health` 同步
+  翻转，未重启进程；密钥不回显、部分字段更新不破坏其他字段
+- 数据源切换实测：临时 SQLite 库走 `/test` + `/connect` 后 `/api/health` 表数
+  6 → 2 即时翻转；期间修复 `finding_rules.yaml` 未随切换替换导致语义层加载 500 的问题
+- 批量删除实测：建 2 条临时会话并删除，接口 200、确认消失，未触碰现有数据
+
+### 已知边界
+
+- PostgreSQL / MySQL 代码路径完整，但本机无驱动与真实库，未实跑；SQLite 已端到端验证
+- 侧边栏会话列表存在页面刷新即新建空会话的现象（`ChatPage` 无 `?session=` 时即建会话），
+  致空「新会话」累积，尚未处理

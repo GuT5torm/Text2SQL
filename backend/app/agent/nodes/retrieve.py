@@ -36,6 +36,9 @@ def retrieve_node(state: AgentState, *, catalog: Catalog) -> dict[str, Any]:
     )
     if hit.time_range:
         detail += f"；时间范围 {hit.time_range.label} → {hit.time_range.resolved}"
+    if hit.unsupported_dimensions:
+        # FR-D-4 补充：时间线里留痕，便于回看时判断这一轮的口径风险
+        detail += "；未收录维度 " + "、".join(hit.unsupported_dimensions)
 
     logger.info(
         "语义召回：metrics=%s tables=%s terms=%s",
@@ -51,6 +54,9 @@ def retrieve_node(state: AgentState, *, catalog: Catalog) -> dict[str, Any]:
             "caveats": hit.caveats(),
             "tables": tables,
             "matched_terms": hit.matched_terms,
+            # FR-D-4 补充：有分组诉求但本库无对应物的维度。retrieved 里单独留一份，
+            # graph 据此在拿到真实 SQL 后补出「实际按哪个字段分组」的提示。
+            "unsupported_dimensions": list(hit.unsupported_dimensions),
             "time_range": (
                 {
                     "label": hit.time_range.label,

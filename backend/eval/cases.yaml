@@ -376,10 +376,13 @@ groups:
       - id: flow-p001
         question: 上个月各区域的成交总额
         intent: 区域下钻走排名形态，柱图
+        # dimension_caveat: false 是误报防线。带「各 X」句式的已知维度一旦被
+        # 检测误判成生词，这里会立刻失败，避免提示逻辑反过来污染正常查询。
         expect:
           status: ok
           min_rows: 1
           chart_type: bar
+          dimension_caveat: false
 
       - id: flow-p002
         question: 近半年每月销售额走势
@@ -422,7 +425,9 @@ groups:
           chart_type: line
           dimensions: [order_date]
           granularity: day
-          sql_contains: [order_date]
+          # 断言按天分组的关键是先 date() 截断，而不是出现某个标识名。
+          # 维度本身的等价判定由 dimensions 处理（见 run_eval 的 expression 解析）。
+          sql_contains: ["date("]
 
       - id: flow-p007
         question: 上周各城市的订单量
@@ -434,6 +439,7 @@ groups:
           dimensions: [city]
           must_join: [users]
           sql_contains: [users]
+          dimension_caveat: false
 
       - id: flow-p008
         question: 上个月各会员等级的客单价
@@ -443,15 +449,21 @@ groups:
           min_rows: 1
           dimensions: [user_level]
           must_join: [users]
-          sql_contains: [user_level]
+          # 同 p006：断言落在物理列名 level 上。user_level 是语义层内部标识，
+          # 模型不可能知道这个名字，拿它做字面量断言只会产生假失败。
+          sql_contains: [level]
 
       - id: flow-p009
         question: 上个月各种支付方式的下单人数
         intent: 支付方式不是已登记维度，考察无命中时的兜底行为
+        # sql_contains: [orders] 属于弱断言：只要提到 orders 就通过，
+        # 哪怕是把支付方式错落成 channel，这条也会判过。真正要验的是
+        # 系统有没有把「本库无此维度」说破——dimension_caveat 承担这个职责。
         expect:
           status: ok
           min_rows: 1
           sql_contains: [orders]
+          dimension_caveat: true
 
       - id: flow-p010
         question: 你好呀

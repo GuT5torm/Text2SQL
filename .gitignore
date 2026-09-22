@@ -35,6 +35,17 @@ htmlcov/
 # report.json 是每次跑评测的快照，内容可由 cases.yaml 复现，不入库
 backend/eval/results/
 backend/eval/report.json
+# 分主题跑评测的产物（report-mock-*.json / report-real-*.json 等）
+backend/eval/report-*.json
+
+# ---- 运行时备份与本地验证产物 ----
+# 数据源切换 / 接入新库时自动备份的语义层与业务库快照（*.bak-<时间戳>）
+backend/app/semantic/*.bak-*
+backend/data/*.bak-*
+# 临时业务库（端到端验证用，验证后应删除）
+backend/data/test_*.db
+# 前端构建验证目录（CLI 删除可能被回收钩子拦截，产物不入库）
+frontend/.verify-build/
 
 # ---- 部署运行产物 ----
 deploy/logs/

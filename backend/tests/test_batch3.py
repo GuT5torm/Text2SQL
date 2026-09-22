@@ -163,6 +163,11 @@ class TestDataFreshness:
         # 用 0 天阈值强制触发 is_stale
         monkeypatch_ = pytest.MonkeyPatch()
         monkeypatch_.setenv("DATA_STALENESS_DAYS", "0")
+        # cutoff 必须钉死为一个过去的日期，不能依赖业务库的真实截止日。
+        # 2026-09-22 把演示数据平移到当天后，这条用例原本的假设（库里的数据
+        # 一定不是今天的）不再成立，age_days=0 时 0 阈值也不会判 stale。
+        # 固定 cutoff 后，本用例只考察阈值比较本身。
+        monkeypatch_.setenv("DATA_CUTOFF_OVERRIDE", "2026-08-01")
         try:
             result = compute_data_freshness(business_repo)
         finally:

@@ -45,6 +45,9 @@ class Settings(BaseSettings):
     # —— 存储 ——
     business_db_path: Path = BACKEND_DIR / "data" / "ecommerce.db"
     app_db_path: Path = BACKEND_DIR / "data" / "app.db"
+    # 非 SQLite 业务库的连接串（PostgreSQL / MySQL）。含密码等敏感信息，
+    # 仅存于 .env（已 gitignore），代码中不出现字面量；GET 接口不回传。
+    business_db_dsn: str = ""
 
     # —— SQL 安全沙箱 ——
     sql_timeout_seconds: float = 10.0
@@ -67,7 +70,12 @@ class Settings(BaseSettings):
     # —— 会话 ——
     # 历史会话回灌给模型的最近轮数
     history_window: int = 6
-    checkpointer: str = "memory"  # memory | sqlite
+    # FR-H-1：默认 sqlite——会话状态跨重启保留，符合 FRD「默认落库」要求。
+    # 退回 memory 仅在 langgraph-checkpoint-sqlite 未安装时由 checkpointer.py 兜底。
+    checkpointer: str = "sqlite"  # memory | sqlite
+    # FR-H-5：归档会话保留期。超过该天数仍未恢复的归档会话在列表请求时
+    # 惰性清理（不引入定时任务）。90 天为保守默认，可按演示需求调整。
+    archived_retention_days: int = 90
 
     # —— 数据时效（FR-D-2）——
     # 超过该天数未更新视为异常。订单库每天都该有变化，按 7 天取保守值；
@@ -117,3 +125,77 @@ class Settings(BaseSettings):
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
     return Settings()
+
+
+# —— 运行时设置（界面配置 API Key 等）——
+# 仅暴露下面白名单内的字段，避免通过 Web 接口改写任意配置。
+# 字段名 → .env 中的环境变量名。
+_RUNTIME_WHITELIST: dict[str, str] = {
+    "llm_api_key": "LLM_API_KEY",
+    "llm_base_url": "LLM_BASE_URL",
+    "llm_model": "LLM_MODEL",
+    "llm_mock": "LLM_MOCK",
+    "llm_fallback_model": "LLM_FALLBACK_MODEL",
+    "business_db_path": "BUSINESS_DB_PATH",
+    "business_db_dsn": "BUSINESS_DB_DSN",
+    "sql_dialect": "SQL_DIALECT",
+}
+
+
+def _coerce_env_value(value: object) -> str:
+    """把 Python 值转成 .env 里的安全字符串。布尔按 true/false 写，与 pydantic 解析一致。"""
+    if value is True:
+        return "true"
+    if value is False:
+        return "false"
+    return str(value)
+
+
+def _format_env_value(value: object) -> str:
+    """转成 .env 行值。含 #、空白、引号或为空时加双引号转义，避免被当作注释或截断。"""
+    s = _coerce_env_value(value)
+    if s == "" or any(ch in s for ch in ('#', '"', ' ', '\t')):
+        s = '"' + s.replace('\\', '\\\\').replace('"', '\\"') + '"'
+    return s
+
+
+def apply_runtime_settings(patch: dict[str, object]) -> None:
+    """把白名单字段写回 .env 并清配置缓存，使下一次请求即用新配置（无需重启）。
+
+    设计要点：
+    - 只接受 _RUNTIME_WHITELIST 内的字段，其余忽略，杜绝通过接口改危险项；
+    - 改写保留 .env 的注释与其他行，只替换匹配 ``KEY=`` 的行，未出现的字段追加到末尾；
+    - 清 get_settings 缓存后，调用方（路由）需再 reset_container() 让网关用新密钥重建。
+    """
+    allowed = {k: v for k, v in patch.items() if k in _RUNTIME_WHITELIST}
+    if not allowed:
+        return
+
+    env_path = BACKEND_DIR / ".env"
+    lines = (
+        env_path.read_text(encoding="utf-8").splitlines()
+        if env_path.exists()
+        else []
+    )
+    seen: set[str] = set()
+    out: list[str] = []
+    for line in lines:
+        stripped = line.strip()
+        hit_field: str | None = None
+        for field, env_var in _RUNTIME_WHITELIST.items():
+            if stripped.upper().startswith(f"{env_var}="):
+                hit_field = field
+                break
+        if hit_field is not None and hit_field in allowed:
+            out.append(f"{_RUNTIME_WHITELIST[hit_field]}={_format_env_value(allowed[hit_field])}")
+            seen.add(hit_field)
+        else:
+            out.append(line)
+
+    # 白名单中尚未出现在 .env 的字段，追加到末尾
+    for field, env_var in _RUNTIME_WHITELIST.items():
+        if field in allowed and field not in seen:
+            out.append(f"{env_var}={_format_env_value(allowed[field])}")
+
+    env_path.write_text("\n".join(out) + "\n", encoding="utf-8")
+    get_settings.cache_clear()

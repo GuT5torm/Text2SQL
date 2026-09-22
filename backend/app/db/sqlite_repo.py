@@ -270,6 +270,28 @@ class SqliteSessionStore(SessionStore):
             s.commit()
             return True
 
+    # FR-H-5：归档保留期自动清理。归档超过 N 天未恢复的会话物理删除。
+    # 采用惰性清理——只在 list_sessions 与 archive_session 触发时顺手扫一次，
+    # 避免引入后台定时任务与本机 cron 依赖。
+    def purge_expired_archived(self, retention_days: int) -> int:
+        if retention_days <= 0:
+            return 0
+        cutoff = dt.datetime.now() - dt.timedelta(days=retention_days)
+        with OrmSession(self.engine) as s:
+            # SQLite 没有 DATE_SUB，用 strftime 比较；updated_at 形如 2026-09-22T...
+            stale = (
+                s.query(Session)
+                .filter(Session.archived == 1)
+                .filter(Session.updated_at < cutoff)
+                .all()
+            )
+            for obj in stale:
+                # 关联 turns 由外键 ON DELETE CASCADE 清理（schema.sql 已设置）
+                s.delete(obj)
+            if stale:
+                s.commit()
+            return len(stale)
+
     # —— 问答记录 ——
     def add_turn(self, turn: TurnRecord) -> int:
         with OrmSession(self.engine) as s:

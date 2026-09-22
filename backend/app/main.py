@@ -18,7 +18,18 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from app.api import alerts, chat, drilldown, feedback, semantic, session, share, sql_explain
+from app.api import (
+    alerts,
+    chat,
+    datasource,
+    drilldown,
+    feedback,
+    semantic,
+    session,
+    settings,
+    share,
+    sql_explain,
+)
 from app.api.deps import get_container
 from app.agent.nodes._freshness import compute_data_freshness
 from app.config import get_settings
@@ -99,6 +110,8 @@ app.include_router(feedback.router)
 app.include_router(share.router)
 app.include_router(alerts.router)
 app.include_router(sql_explain.router)
+app.include_router(settings.router)
+app.include_router(datasource.router)
 
 
 @app.get("/api/health", tags=["ops"])

@@ -33,6 +33,10 @@ MAX_EXAMPLES = 3
 # 两者在「一单多退」下不是同一个数，维度必须显式声明取哪一个。
 COUNT_GRAINS = {"refund_row", "order"}
 
+# 未收录维度提示的固定前缀。graph 拿到真实 SQL 后据此定位该条 caveat，
+# 替换成指明实际分组字段的精化文案，避免同一件事在答案里出现两遍。
+UNSUPPORTED_CAVEAT_PREFIX = "未收录维度"
+
 
 class SemanticError(RuntimeError):
     """语义层配置不自洽。错误信息会列出全部问题，便于一次性改完。"""
@@ -68,6 +72,9 @@ class SemanticHit:
     matched_terms: list[str] = field(default_factory=list)
     # 命中的枚举值口语，如「江浙沪」→ orders.region = '华东'
     value_hints: list[str] = field(default_factory=list)
+    # FR-D-4 补充：有分组诉求但本库无对应物的维度词。「支付方式」是典型——
+    # 生成阶段若不点破，会就近拿 channel 顶替，SQL 跑得通但答非所问。
+    unsupported_dimensions: list[str] = field(default_factory=list)
 
     @property
     def is_empty(self) -> bool:
@@ -77,9 +84,16 @@ class SemanticHit:
         return [m["display"] for m in self.metrics]
 
     def caveats(self) -> list[str]:
-        return [
+        rows = [
             f"{m['display']}：{m['caveats']}" for m in self.metrics if m.get("caveats")
         ]
+        # 未收录维度用固定前缀，便于 graph 在拿到真实 SQL 后定位并替换成
+        # 指明实际分组字段的精化文案，避免同一件事说两遍。
+        rows.extend(
+            f"{UNSUPPORTED_CAVEAT_PREFIX}「{d}」：本库语义层与表结构中均无对应字段"
+            for d in self.unsupported_dimensions
+        )
+        return rows
 
 
 @dataclass
@@ -107,6 +121,9 @@ class Catalog:
     # FR-I-3：敏感字段派生索引。键统一小写，形如 "users.phone"；
     # 值为 {"mask": "phone", "display": "手机号", "table": "users"}
     sensitive_fields: dict[str, dict[str, str]] = field(default_factory=dict)
+    # FR-D-4 补充：本库全部已知叫法的汇总池（维度 / 指标 / 表 / 字段 / 枚举 /
+    # 同义词）。由 load_catalog 填充，服务于未收录维度检测，避免每次召回重建。
+    vocabulary: set[str] = field(default_factory=set)
 
     def all_field_refs(self) -> dict[str, set[str]]:
         """表名 → 该表的合法字段集合。字段白名单校验的唯一来源。"""
@@ -236,6 +253,13 @@ def load_catalog(semantic_dir: Path | None = None) -> Catalog:
                     "display": _f.get("display") or _f["name"],
                     "mask": _f.get("mask") or "other",
                 }
+
+    # FR-D-4 补充：已登记叫法的汇总池，供未收录维度检测复用。
+    # 这里延迟导入是因为 dimension_check 反向依赖 Catalog 类型做标注，
+    # 顶层互引会形成环；放在加载流程末尾填充，recall 侧就不必每次重建。
+    from app.semantic.dimension_check import build_vocabulary
+
+    catalog.vocabulary = build_vocabulary(catalog)
 
     problems = _validate(catalog)
     if problems:
@@ -846,6 +870,16 @@ def recall(question: str, catalog: Catalog, today: dt.date | None = None) -> Sem
         key=len,
         reverse=True,
     )[:8]
+
+    # —— 8. 未收录维度（FR-D-4 补充）——
+    # 延迟导入的原因同 load_catalog：dimension_check 依赖 Catalog 做类型标注。
+    from app.semantic.dimension_check import detect_unsupported_dimensions
+
+    # 词汇池由 load_catalog 填充；手工构造的 Catalog 可能没有，此时跳过检测，
+    # 否则每一项都会被判成生词。
+    hit.unsupported_dimensions = detect_unsupported_dimensions(
+        question, catalog, catalog.vocabulary
+    )
     return hit
 
 
@@ -927,6 +961,21 @@ def render_context(hit: SemanticHit) -> str:
             f"问题：{ex['q']}\nSQL：\n```sql\n{ex['sql'].strip()}\n```" for ex in hit.examples
         ]
         parts.append("## 参考示例\n" + "\n\n".join(blocks))
+
+    if hit.unsupported_dimensions:
+        listed = "、".join(f"「{d}」" for d in hit.unsupported_dimensions)
+        parts.append(
+            "## 本库未收录的维度\n"
+            f"问题里的 {listed} 既不在上面的「可用维度」里，也不是任何一张表的字段，"
+            "本库没有这份数据。\n"
+            "不要用语义相近的其他字段顶替——例如用「下单渠道」充当「支付方式」。"
+            "顶替出来的语句能执行、结果有数据、图表看着正常，但答的已经不是用户问的"
+            "那一列，而且全程没有任何报错会让用户察觉。\n"
+            "也不要用字面量伪造这一列，例如 `SELECT '未知' AS 支付方式`：那会画出一根"
+            "写着「未知」的柱子，看着像答案，实际没有任何分组信息。\n"
+            "正确做法：该维度缺位就不给这一列，按全量口径出数；并在 reasoning 里写明"
+            "「本库无 X，本轮未按该维度拆分」，供用户核对。"
+        )
 
     return "\n\n".join(parts)
 

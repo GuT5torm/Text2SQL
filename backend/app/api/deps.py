@@ -22,6 +22,7 @@ from app.db.engine import ensure_business_db
 from app.db.guard import SqlGuard
 from app.db.repository import QueryRepository, SessionStore
 from app.db.sqlite_repo import SqliteQueryRepository, SqliteSessionStore
+from app.db.generic_repo import GenericSqlQueryRepository
 from app.llm.gateway import Gateway
 from app.semantic.loader import Catalog, load_catalog
 
@@ -44,12 +45,21 @@ class Container:
 
 def build_container(settings: Settings | None = None) -> Container:
     s = settings or get_settings()
-    ensure_business_db(s.business_db_path)
-
     catalog = load_catalog()
     gateway = Gateway(s)
     guard = SqlGuard.from_catalog(catalog, max_rows=s.sql_max_rows, dialect=s.sql_dialect)
-    repo = SqliteQueryRepository()
+
+    # 业务库仓库按方言切换：SQLite 走只读 mode=ro 连接（安全体系第一层），
+    # 其余方言走通用实现。这是 ADR-002 留出的唯一换库接缝。
+    if s.sql_dialect == "sqlite":
+        ensure_business_db(s.business_db_path)
+        repo: QueryRepository = SqliteQueryRepository()
+    else:
+        if not s.business_db_dsn:
+            raise RuntimeError(
+                f"方言为 {s.sql_dialect} 时需要配置 BUSINESS_DB_DSN（连接串）"
+            )
+        repo = GenericSqlQueryRepository(s.business_db_dsn, s.sql_dialect)
     store = SqliteSessionStore()
     checkpointer, checkpointer_mode = build_checkpointer_with_mode(s)
 

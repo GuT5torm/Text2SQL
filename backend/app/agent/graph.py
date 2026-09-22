@@ -46,7 +46,8 @@ from app.db.guard import (
 )
 from app.db.repository import QueryRepository
 from app.llm.gateway import Gateway
-from app.semantic.loader import Catalog
+from app.semantic.dimension_check import describe_substitution
+from app.semantic.loader import UNSUPPORTED_CAVEAT_PREFIX, Catalog
 
 logger = logging.getLogger(__name__)
 
@@ -277,6 +278,26 @@ def derive_guard_notices(state: dict[str, Any]) -> list[dict[str, str]]:
     return notices
 
 
+def _finalize_caveats(state: dict[str, Any]) -> list[str]:
+    """FR-D-4 补充：未收录维度提示在拿到真实 SQL 后补上实际分组字段。
+
+    召回阶段只能说「库里没有这个维度」，等 SQL 出来才知道系统实际用了哪个字段
+    顶替。两件事放一起说，用户才核对得动。拿不到分组字段时保留召回阶段的原文，
+    提示不会丢失。
+    """
+    retrieved = state.get("retrieved") or {}
+    original = list(retrieved.get("caveats") or [])
+    unsupported = list(retrieved.get("unsupported_dimensions") or [])
+    if not unsupported:
+        return original
+    note = describe_substitution(state.get("sql") or "", unsupported)
+    if not note:
+        return original
+    return [
+        c for c in original if not c.startswith(UNSUPPORTED_CAVEAT_PREFIX)
+    ] + [note]
+
+
 def summarize_result(state: dict[str, Any]) -> dict[str, Any]:
     """把图终态整理成接入层要返回的结构。
 
@@ -305,7 +326,7 @@ def summarize_result(state: dict[str, Any]) -> dict[str, Any]:
         "query_elapsed_ms": state.get("query_elapsed_ms") or 0.0,
         "chart": chart,
         "metric_used": list(state.get("metric_used") or []),
-        "caveats": list((state.get("retrieved") or {}).get("caveats") or []),
+        "caveats": _finalize_caveats(state),
         "time_range": (state.get("retrieved") or {}).get("time_range"),
         "retry_count": int(state.get("retry_count") or 0),
         "intent": state.get("intent"),
@@ -342,6 +363,10 @@ def summarize_result(state: dict[str, Any]) -> dict[str, Any]:
         # —— FR-H-3 原话与改写句 ——
         "original_question": state.get("original_question") or state.get("question") or "",
         "rewritten_question": state.get("rewritten_question") or "",
+        # —— FR-E-4 修正历史 ——
+        # fix_history 在 execute / validate / fix 三处累加，结构 [{stage, error}]。
+        # 之前只渲染进 fix 节点 prompt，没外露给前端，FR-E-4 要求可见可核对。
+        "fix_history": list(state.get("fix_history") or []),
     }
 
 
