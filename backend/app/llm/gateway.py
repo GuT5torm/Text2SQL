@@ -210,6 +210,21 @@ class Gateway:
             )
         )
 
+    def _estimated_cost(self) -> float:
+        """按配置价格表估算累计成本（FR-J-3）。
+
+        价格单位是「每千 token」，未配置价格的模型按 0 计，不臆造价格。
+        """
+        prices = self.settings.llm_prices if self.settings else {}
+        total = 0.0
+        for u in self.usage:
+            price = prices.get(u.model)
+            if not price:
+                continue
+            total += u.prompt_tokens / 1000.0 * price["input"]
+            total += u.completion_tokens / 1000.0 * price["output"]
+        return round(total, 6)
+
     def totals(self) -> dict[str, Any]:
         return {
             "calls": len(self.usage),
@@ -217,6 +232,8 @@ class Gateway:
             "fallback_calls": sum(1 for u in self.usage if u.fallback),
             "prompt_tokens": sum(u.prompt_tokens for u in self.usage),
             "completion_tokens": sum(u.completion_tokens for u in self.usage),
+            # FR-J-3：累计估算成本，价格表走配置（未配置模型按 0 计）
+            "estimated_cost": self._estimated_cost(),
             "elapsed_ms": round(sum(u.elapsed_ms for u in self.usage), 1),
             "mock": self.mock,
             "by_tag": _group_usage(self.usage),
@@ -288,6 +305,58 @@ def _validate(schema: type[T], data: Any) -> T | None:
 # ----------------------------------------------------------------------
 
 _MOCK_SQL_BY_KEYWORD: list[tuple[tuple[str, ...], str]] = [
+    # FR-A-3：TopN。「成交额前 5 的品类」产出 SQL 含 ORDER BY ... DESC LIMIT 5
+    (
+        ("前5", "前 5", "前五", "top5", "top 5"),
+        """SELECT c.name AS 品类,
+       ROUND(SUM(oi.quantity * oi.unit_price), 2) AS 成交总额
+FROM orders o
+JOIN order_items oi ON oi.order_id = o.id
+JOIN products p ON p.id = oi.product_id
+JOIN categories c ON c.id = p.category_id
+WHERE o.status NOT IN ('cancelled', 'pending')
+GROUP BY c.name
+ORDER BY 成交总额 DESC
+LIMIT 5""",
+    ),
+    # FR-A-3：排名。「各区域成交额排名」含排名语义
+    (
+        ("排名", "排行"),
+        """SELECT o.region AS 大区,
+       ROUND(SUM(oi.quantity * oi.unit_price), 2) AS 成交总额,
+       RANK() OVER (ORDER BY SUM(oi.quantity * oi.unit_price) DESC) AS 排名
+FROM orders o
+JOIN order_items oi ON oi.order_id = o.id
+WHERE o.status NOT IN ('cancelled', 'pending')
+GROUP BY o.region
+ORDER BY 排名
+LIMIT 1000""",
+    ),
+    # FR-A-4：数值过滤。阈值不被当作维度取值
+    (
+        ("大于", "超过", "高于"),
+        """SELECT o.region AS 大区,
+       ROUND(SUM(oi.quantity * oi.unit_price), 2) AS 成交总额
+FROM orders o
+JOIN order_items oi ON oi.order_id = o.id
+WHERE o.status NOT IN ('cancelled', 'pending')
+GROUP BY o.region
+HAVING 成交总额 > 1000000
+ORDER BY 成交总额 DESC
+LIMIT 1000""",
+    ),
+    (
+        ("小于", "低于"),
+        """SELECT o.region AS 大区,
+       ROUND(SUM(oi.quantity * oi.unit_price), 2) AS 成交总额
+FROM orders o
+JOIN order_items oi ON oi.order_id = o.id
+WHERE o.status NOT IN ('cancelled', 'pending')
+GROUP BY o.region
+HAVING 成交总额 < 100000
+ORDER BY 成交总额 ASC
+LIMIT 1000""",
+    ),
     (
         ("退款", "退货"),
         """SELECT o.region AS 大区,
@@ -347,6 +416,10 @@ LIMIT 1000"""
 
 
 _QUESTION_HEADING_RE = re.compile(r"##\s*[^\n#]*问题[^\n]*")
+# route.md 用「本轮问题：」标记问题位置，generate.md 用「## 问题」。
+# 两种标记都要识别，否则 route 节点会把整段 prompt 当成问题做关键词匹配，
+# 误触发改写（prompt 里的示例「按品类拆一下」含「按」字）。
+_CURRENT_QUESTION_RE = re.compile(r"本轮问题：\s*")
 
 
 def _mock_subject(prompt: str) -> str:
@@ -355,11 +428,16 @@ def _mock_subject(prompt: str) -> str:
     直接对整段 prompt 做匹配会出错：语义层上下文里列出了全部指标名，
     「退款率」几乎出现在每个 prompt 中，于是任何问题都会命中退款分支。
     因此只取最后一个「## …问题」小节之后的内容作为匹配对象。
+    route.md 没有「## 问题」小节，用「本轮问题：」标记，这里同样兜底。
     """
     matches = list(_QUESTION_HEADING_RE.finditer(prompt))
-    if not matches:
-        return prompt
-    return prompt[matches[-1].end() :].strip() or prompt
+    if matches:
+        return prompt[matches[-1].end() :].strip() or prompt
+    # route.md 路径：取最后一个「本轮问题：」之后的内容
+    matches = list(_CURRENT_QUESTION_RE.finditer(prompt))
+    if matches:
+        return prompt[matches[-1].end() :].strip() or prompt
+    return prompt
 
 
 def _mock_text(tag: str, prompt: str) -> str:
@@ -378,10 +456,137 @@ def _mock_text(tag: str, prompt: str) -> str:
     return ""
 
 
+# FR-A-1/A-2：桩模式下识别追问关键词。命中时填 rewritten_question，
+# 让多轮改写在桩模式下可观测。切到真实模型后由模型自行判断。
+_MOCK_REWRITE_KEYWORDS: tuple[str, ...] = (
+    "那上个月", "那上个月呢", "上个月呢", "换成", "改成", "按", "只看",
+    "那本周", "本周呢", "那昨天", "昨天呢",
+)
+
+# FR-A-3：排序与 TopN 关键词
+_MOCK_TOPN_KEYWORDS: tuple[str, ...] = (
+    "前5", "前 5", "前五", "top5", "top 5", "前10", "前 10", "前十", "top10",
+    "前3", "前 3", "前三", "top3",
+)
+_MOCK_RANK_KEYWORDS: tuple[str, ...] = ("排名", "排行", "排第几", "榜单")
+
+# FR-A-4：数值过滤关键词（阈值不被当作维度取值）
+_MOCK_NUMERIC_GT: tuple[str, ...] = ("大于", "超过", "高于", "以上", ">", "＞")
+_MOCK_NUMERIC_LT: tuple[str, ...] = ("小于", "低于", "以下", "<", "＜")
+
+
+def _mock_route_decision(prompt: str) -> dict[str, Any]:
+    """桩模式下按关键词填充 RouteDecision 的 slots 与 rewritten_question。
+
+    桩模式无法真正理解语义，但可以把能被关键词识别的槽位填出来，让
+    FR-A-1/A-2/A-3/A-4 的机制与接口在桩模式下可观测、可单测。
+    切到真实模型后，模型自行填充，这里不再生效。
+    """
+    subject = _mock_subject(prompt)
+    slots: dict[str, Any] = {
+        "metrics": [],
+        "dimensions": [],
+        "filters": [],
+        "time_range": "",
+        "order_by": None,
+        "top_n": None,
+    }
+
+    # 指标识别
+    if any(k in subject for k in ("退款", "退货")):
+        slots["metrics"].append("退款率")
+    if any(k in subject for k in ("成交", "销售额", "销售额", "销售")):
+        if "成交总额" not in slots["metrics"]:
+            slots["metrics"].append("成交总额")
+    if any(k in subject for k in ("订单", "下单")):
+        slots["metrics"].append("订单量")
+    if any(k in subject for k in ("客单价",)) :
+        slots["metrics"].append("客单价")
+    if any(k in subject for k in ("毛利",)) :
+        slots["metrics"].append("毛利")
+
+    # 维度识别
+    if any(k in subject for k in ("区域", "大区", "地区")):
+        slots["dimensions"].append("区域")
+    if any(k in subject for k in ("品类", "类目", "分类")):
+        slots["dimensions"].append("品类")
+    if any(k in subject for k in ("渠道",)) :
+        slots["dimensions"].append("渠道")
+
+    # 过滤识别（只识别显式维度值过滤，阈值走数值过滤分支）
+    # 命中大区名时隐含「区域」维度——「华东区的成交总额」虽不含「区域」二字，
+    # 但既然按大区切片，维度列表里就要有区域，否则 slots 断言会落空。
+    for region in ("华东", "华北", "华南", "西南", "西北", "东北"):
+        if region in subject:
+            slots["filters"].append({"field": "区域", "value": region})
+            if "区域" not in slots["dimensions"]:
+                slots["dimensions"].append("区域")
+    for ch in ("线上", "线下", "app", "小程序", "门店"):
+        if ch in subject:
+            slots["filters"].append({"field": "渠道", "value": ch})
+            if "渠道" not in slots["dimensions"]:
+                slots["dimensions"].append("渠道")
+
+    # 时间识别（文字描述，不做绝对日期换算）
+    for kw in ("上个月", "上月", "上季度", "上周", "昨天", "今天", "本周", "上周",
+               "今年", "去年", "近30天", "近7天", "近三个月", "近三个月"):
+        if kw in subject:
+            slots["time_range"] = kw
+            break
+
+    # FR-A-3：排序与 TopN
+    topn: int | None = None
+    for kw in _MOCK_TOPN_KEYWORDS:
+        if kw in subject:
+            # 从关键词里取数字
+            for digit in ("10", "5", "3"):
+                if digit in kw:
+                    topn = int(digit)
+                    break
+            if topn is None:
+                topn = 5
+            break
+    if topn is not None:
+        slots["top_n"] = topn
+        slots["order_by"] = {"field": slots["metrics"][0] if slots["metrics"] else "", "direction": "desc"}
+    elif any(k in subject for k in _MOCK_RANK_KEYWORDS):
+        slots["order_by"] = {"field": slots["metrics"][0] if slots["metrics"] else "", "direction": "desc"}
+
+    # FR-A-4：数值过滤（阈值不被当作维度取值）
+    # 只在未命中维度过滤时把阈值单独标出来，避免与维度值混淆
+    numeric_filters: list[dict[str, Any]] = []
+    for kw in _MOCK_NUMERIC_GT:
+        if kw in subject:
+            numeric_filters.append({"field": slots["metrics"][0] if slots["metrics"] else "", "op": ">", "value": kw})
+            break
+    for kw in _MOCK_NUMERIC_LT:
+        if kw in subject:
+            numeric_filters.append({"field": slots["metrics"][0] if slots["metrics"] else "", "op": "<", "value": kw})
+            break
+    if numeric_filters:
+        slots["filters"].extend(numeric_filters)
+
+    # FR-A-1/A-2：多轮改写。命中追问关键词时填 rewritten_question。
+    # 桩模式无法真正补全，用「[改写] 前缀 + 原问句」标注改写已发生，
+    # 让前端阶段时间线可观测。切到真实模型后由模型自行补全。
+    rewritten: str | None = None
+    for kw in _MOCK_REWRITE_KEYWORDS:
+        if kw in subject:
+            rewritten = f"[桩改写]{subject}"
+            break
+
+    return {
+        "intent": "query",
+        "reason": "桩实现按关键词填充槽位与改写标记",
+        "rewritten_question": rewritten,
+        "slots": slots,
+    }
+
+
 def _mock_json(tag: str, prompt: str, schema: type[T]) -> T:
     name = schema.__name__
     if name == "RouteDecision":
-        payload: dict[str, Any] = {"intent": "query", "reason": "桩实现固定返回取数意图"}
+        payload: dict[str, Any] = _mock_route_decision(prompt)
     elif name == "SqlDraft":
         payload = {
             "sql": _mock_text("generate", prompt),

@@ -72,6 +72,15 @@ _MIN_SYNONYMS = {
     "value_synonyms": [{"term": "江浙沪", "field": "orders.region", "value": "华东"}],
     "time_terms": [{"term": "上个月", "kind": "last_month"}],
 }
+# FR-M-3 基准规则表与其它三份配置同为必需文件，最小目录也要提供
+_MIN_BASELINE_RULES = {
+    "default": {
+        "mom": True,
+        "yoy": True,
+        "granularity": "auto",
+        "min_granularity": "day",
+    }
+}
 
 
 def _write_catalog(
@@ -79,14 +88,29 @@ def _write_catalog(
     tables: dict[str, Any] | None = None,
     metrics: dict[str, Any] | None = None,
     synonyms: dict[str, Any] | None = None,
+    baseline_rules: dict[str, Any] | None = None,
+    finding_rules: dict[str, Any] | None = None,
 ) -> None:
     for filename, payload in (
         ("tables.yaml", tables if tables is not None else _MIN_TABLES),
         ("metrics.yaml", metrics if metrics is not None else _MIN_METRICS),
         ("synonyms.yaml", synonyms if synonyms is not None else _MIN_SYNONYMS),
+        (
+            "baseline_rules.yaml",
+            baseline_rules if baseline_rules is not None else _MIN_BASELINE_RULES,
+        ),
     ):
         (directory / filename).write_text(
             yaml.safe_dump(payload, allow_unicode=True, sort_keys=False), encoding="utf-8"
+        )
+    # FR-L-1 规则表是可选的：不写时取 findings.py 的内建默认值
+    path = directory / "finding_rules.yaml"
+    if finding_rules is None:
+        path.unlink(missing_ok=True)
+    else:
+        path.write_text(
+            yaml.safe_dump(finding_rules, allow_unicode=True, sort_keys=False),
+            encoding="utf-8",
         )
 
 
@@ -360,3 +384,603 @@ def test_describe_catalog_counts(catalog: Catalog) -> None:
     assert overview["counts"]["metrics"] == len(catalog.metrics)
     assert overview["counts"]["tables"] == len(catalog.tables)
     assert {t["name"] for t in overview["tables"]} == catalog.table_names()
+
+
+# ---------------------------------------------------------------------------
+# FR-M-4 枚举字段必须有划分依据
+# ---------------------------------------------------------------------------
+
+
+def test_validate_rejects_enum_field_without_definition(tmp_path: Path) -> None:
+    """含 enum 的字段必须有 definition；缺失即启动失败。"""
+    tables = {
+        "tables": [
+            {
+                "name": "orders",
+                "display": "订单表",
+                "fields": [
+                    {"name": "id", "type": "INTEGER"},
+                    {
+                        "name": "status",
+                        "type": "TEXT",
+                        "enum": {"paid": "已支付", "cancelled": "已取消"},
+                    },
+                ],
+            }
+        ],
+        "dimensions": [
+            {
+                "name": "order_month",
+                "display": "下单月份",
+                "expression": "strftime('%Y-%m', orders.created_at)",
+                "tables": ["orders"],
+            }
+        ],
+    }
+    _write_catalog(tmp_path, tables=tables)
+    with pytest.raises(SemanticError, match="含 enum 但缺少 definition"):
+        load_catalog(tmp_path)
+
+
+def test_validate_rejects_enum_field_with_blank_definition(tmp_path: Path) -> None:
+    """definition 为空白字符串等同于缺失。"""
+    tables = {
+        "tables": [
+            {
+                "name": "orders",
+                "display": "订单表",
+                "fields": [
+                    {
+                        "name": "region",
+                        "type": "TEXT",
+                        "definition": "   ",
+                        "enum": {"华东": "华东"},
+                    }
+                ],
+            }
+        ],
+        "dimensions": [
+            {
+                "name": "order_month",
+                "display": "下单月份",
+                "expression": "strftime('%Y-%m', orders.created_at)",
+                "tables": ["orders"],
+            }
+        ],
+    }
+    _write_catalog(tmp_path, tables=tables)
+    with pytest.raises(SemanticError, match="缺少 definition"):
+        load_catalog(tmp_path)
+
+
+def test_validate_accepts_enum_field_with_definition(tmp_path: Path) -> None:
+    """definition 已填齐时合法配置照常加载。"""
+    tables = {
+        "tables": [
+            {
+                "name": "orders",
+                "display": "订单表",
+                "fields": [
+                    {
+                        "name": "status",
+                        "type": "TEXT",
+                        "definition": "订单状态机：下单→支付→履约→完成 / 取消 / 退款。",
+                        "enum": {"paid": "已支付"},
+                    }
+                ],
+            }
+        ],
+        "dimensions": [
+            {
+                "name": "order_month",
+                "display": "下单月份",
+                "expression": "strftime('%Y-%m', orders.created_at)",
+                "tables": ["orders"],
+            }
+        ],
+    }
+    _write_catalog(
+        tmp_path,
+        tables=tables,
+        synonyms={"synonyms": [], "value_synonyms": [], "time_terms": []},
+    )
+    catalog = load_catalog(tmp_path)
+    assert "orders" in catalog.table_names()
+
+
+def test_validate_does_not_require_definition_for_non_enum_fields(tmp_path: Path) -> None:
+    """没有 enum 的字段不强制要求 definition。"""
+    tables = {
+        "tables": [
+            {
+                "name": "orders",
+                "display": "订单表",
+                "fields": [{"name": "id", "type": "INTEGER"}],
+            }
+        ],
+        "dimensions": [
+            {
+                "name": "order_month",
+                "display": "下单月份",
+                "expression": "strftime('%Y-%m', orders.created_at)",
+                "tables": ["orders"],
+            }
+        ],
+    }
+    _write_catalog(
+        tmp_path,
+        tables=tables,
+        synonyms={"synonyms": [], "value_synonyms": [], "time_terms": []},
+    )
+    catalog = load_catalog(tmp_path)
+    assert "orders" in catalog.table_names()
+
+
+# ---------------------------------------------------------------------------
+# FR-M-5 同分母概念的指标其 orders.status 过滤必须一致
+# ---------------------------------------------------------------------------
+
+
+def test_validate_accepts_consistent_denominator_status_filters(tmp_path: Path) -> None:
+    """同 denominator 指标的 status 过滤字符串完全一致时合法。"""
+    metrics = {
+        "metrics": [
+            {
+                "name": "gmv",
+                "display": "成交总额",
+                "expression": "SUM(o.amount)",
+                "tables": ["orders"],
+                "dimensions": ["order_month"],
+                "denominator": "paid_order",
+                "required_filters": ["orders.status NOT IN ('cancelled', 'pending')"],
+                "examples": [{"q": "上个月成交总额", "sql": "SELECT 1"}],
+            },
+            {
+                "name": "sales_volume",
+                "display": "销量",
+                "expression": "SUM(oi.quantity)",
+                "tables": ["orders"],
+                "dimensions": ["order_month"],
+                "denominator": "paid_order",
+                "required_filters": ["orders.status NOT IN ('cancelled', 'pending')"],
+                "examples": [{"q": "上个月销量", "sql": "SELECT 1"}],
+            },
+        ]
+    }
+    _write_catalog(tmp_path, metrics=metrics)
+    catalog = load_catalog(tmp_path)
+    assert {"gmv", "sales_volume"} <= set(catalog.metric_by_name)
+
+
+def test_validate_rejects_inconsistent_denominator_status_filters(tmp_path: Path) -> None:
+    """同 denominator 但 status 过滤不同，必须拒绝启动（FR-L-4 场景）。"""
+    metrics = {
+        "metrics": [
+            {
+                "name": "gmv",
+                "display": "成交总额",
+                "expression": "SUM(o.amount)",
+                "tables": ["orders"],
+                "dimensions": ["order_month"],
+                "denominator": "paid_order",
+                "required_filters": ["orders.status NOT IN ('cancelled', 'pending')"],
+                "examples": [{"q": "上个月成交总额", "sql": "SELECT 1"}],
+            },
+            {
+                "name": "refund_rate",
+                "display": "退款率",
+                "expression": "COUNT(DISTINCT r.order_id) * 1.0 / COUNT(DISTINCT o.id)",
+                "tables": ["orders"],
+                "dimensions": ["order_month"],
+                "denominator": "paid_order",
+                # 这里 ref 没有 status 过滤，触发 FR-M-5
+                "required_filters": ["refunds.order_id = orders.id"],
+                "examples": [{"q": "上个月退款率", "sql": "SELECT 1"}],
+            },
+        ]
+    }
+    _write_catalog(tmp_path, metrics=metrics)
+    with pytest.raises(SemanticError, match="分母概念 'paid_order' 不一致"):
+        load_catalog(tmp_path)
+
+
+def test_validate_allows_different_denominators_to_differ(tmp_path: Path) -> None:
+    """不同 denominator 概念的指标不参与比较，status 过滤不同不报错。"""
+    metrics = {
+        "metrics": [
+            {
+                "name": "gmv",
+                "display": "成交总额",
+                "expression": "SUM(o.amount)",
+                "tables": ["orders"],
+                "dimensions": ["order_month"],
+                "denominator": "paid_order",
+                "required_filters": ["orders.status NOT IN ('cancelled', 'pending')"],
+                "examples": [{"q": "上个月成交总额", "sql": "SELECT 1"}],
+            },
+            {
+                "name": "all_order_count",
+                "display": "全部订单量",
+                "expression": "COUNT(DISTINCT orders.id)",
+                "tables": ["orders"],
+                "dimensions": ["order_month"],
+                "denominator": "all_orders",
+                # 不同分母，不需要 status 过滤
+                "required_filters": [],
+                "examples": [{"q": "全部订单", "sql": "SELECT 1"}],
+            },
+        ]
+    }
+    _write_catalog(tmp_path, metrics=metrics)
+    catalog = load_catalog(tmp_path)
+    assert {"gmv", "all_order_count"} <= set(catalog.metric_by_name)
+
+
+def test_validate_metric_without_denominator_is_not_checked(tmp_path: Path) -> None:
+    """不声明 denominator 的指标不参与一致性校验。"""
+    metrics = {
+        "metrics": [
+            {
+                "name": "no_denom",
+                "display": "口径独立的指标",
+                "expression": "SUM(x)",
+                "tables": ["orders"],
+                "dimensions": ["order_month"],
+                "required_filters": [],
+                "examples": [{"q": "随便问", "sql": "SELECT 1"}],
+            }
+        ]
+    }
+    # synonyms 默认条目 term=流水 → gmv 会因为 gmv 不存在而失败，这里给个空配置即可。
+    _write_catalog(
+        tmp_path,
+        metrics=metrics,
+        synonyms={"synonyms": [], "value_synonyms": [], "time_terms": []},
+    )
+    catalog = load_catalog(tmp_path)
+    assert "no_denom" in catalog.metric_by_name
+
+
+# ---------------------------------------------------------------------------
+# 真实配置的 FR-M-4 / FR-M-5 一致性回归
+# ---------------------------------------------------------------------------
+
+
+def test_real_catalog_passes_enum_definition_check(catalog: Catalog) -> None:
+    """真实配置的所有含 enum 字段都必须有 definition，新加字段时遗漏会失败。"""
+    for table in catalog.tables:
+        for field in table.get("fields") or []:
+            if field.get("enum"):
+                assert (
+                    field.get("definition") or ""
+                ).strip(), f"{table['name']}.{field['name']} 缺少 definition"
+
+
+def test_real_catalog_passes_denominator_consistency_check(catalog: Catalog) -> None:
+    """真实配置的所有 denominator 标签下 status 过滤必须一致，未来添加时该用同分母概念。"""
+    groups: dict[str, set[frozenset[str]]] = {}
+    for metric in catalog.metrics:
+        denom = metric.get("denominator")
+        if not denom:
+            continue
+        sf = frozenset(
+            f.strip()
+            for f in (metric.get("required_filters") or [])
+            if "orders.status" in f
+        )
+        groups.setdefault(denom, set()).add(sf)
+    for denom, filters_set in groups.items():
+        assert len(filters_set) <= 1, (
+            f"denominator '{denom}' 下出现了多套 status 过滤：{filters_set}"
+        )
+
+
+
+# ---------------------------------------------------------------------------
+# FR-M-3 基准规则表校验
+# ---------------------------------------------------------------------------
+
+
+def test_baseline_rules_require_default(tmp_path: Path) -> None:
+    """没有 default 时「未配置的指标取默认规则」无从落地，按启动失败处理。"""
+    _write_catalog(tmp_path, baseline_rules={"metrics": {"gmv": {"min_granularity": "month"}}})
+    with pytest.raises(SemanticError, match="缺少 default 规则组"):
+        load_catalog(tmp_path)
+
+
+def test_baseline_rules_reject_unregistered_metric(tmp_path: Path) -> None:
+    _write_catalog(
+        tmp_path,
+        baseline_rules={"default": {"mom": True}, "metrics": {"not_a_metric": {"mom": False}}},
+    )
+    with pytest.raises(SemanticError, match="指标 not_a_metric 未在 metrics.yaml 中登记"):
+        load_catalog(tmp_path)
+
+
+@pytest.mark.parametrize(
+    "rule, message",
+    [
+        ({"granularity": "quarter"}, "granularity 非法"),
+        ({"min_granularity": "hour"}, "min_granularity 非法"),
+        ({"mom": "yes"}, "mom 必须是布尔值"),
+    ],
+)
+def test_baseline_rules_reject_bad_values(
+    tmp_path: Path, rule: dict[str, Any], message: str
+) -> None:
+    _write_catalog(tmp_path, baseline_rules={"default": {"mom": True}, "metrics": {"gmv": rule}})
+    with pytest.raises(SemanticError, match=message):
+        load_catalog(tmp_path)
+
+
+def test_baseline_rules_lookup_merges_default(tmp_path: Path) -> None:
+    """指标规则只写差异项，未写的字段从 default 继承。"""
+    _write_catalog(
+        tmp_path,
+        baseline_rules={
+            "default": {"mom": True, "yoy": True, "granularity": "auto", "min_granularity": "day"},
+            "metrics": {"gmv": {"min_granularity": "month"}},
+        },
+    )
+    catalog = load_catalog(tmp_path)
+    assert catalog.baseline_rule("gmv")["min_granularity"] == "month"
+    assert catalog.baseline_rule("gmv")["yoy"] is True
+    assert catalog.baseline_rule("不存在")["min_granularity"] == "day"
+
+
+# ---------------------------------------------------------------------------
+# FR-L-1 异常判定规则表校验
+# ---------------------------------------------------------------------------
+
+def test_finding_rules_are_optional(tmp_path: Path) -> None:
+    """规则表缺失时取内建默认值，最小语义目录不必携带它。"""
+    _write_catalog(tmp_path)
+    catalog = load_catalog(tmp_path)
+    assert catalog.finding_rule("gmv") == {}
+
+
+def test_finding_rules_reject_unregistered_metric(tmp_path: Path) -> None:
+    _write_catalog(tmp_path, finding_rules={"default": {}, "metrics": {"nope": {}}})
+    with pytest.raises(SemanticError, match="指标 nope 未在 metrics.yaml 中登记"):
+        load_catalog(tmp_path)
+
+
+@pytest.mark.parametrize(
+    "rule, message",
+    [
+        ({"deviation_threshold": "20%"}, "deviation_threshold 必须是数值"),
+        ({"rank_ratio": 0}, "rank_ratio 必须大于 0"),
+        ({"rank_ratio": 0.6}, "rank_ratio 不应超过 0.5"),
+        ({"min_slices": 1}, "min_slices 至少为 2"),
+        ({"severity": "严重"}, "severity 非法"),
+        ({"absolute": {"direction": "over"}}, "direction 非法"),
+        ({"absolute": {"severity": "严重"}}, "absolute.severity 非法"),
+    ],
+)
+def test_finding_rules_reject_bad_values(
+    tmp_path: Path, rule: dict[str, Any], message: str
+) -> None:
+    _write_catalog(tmp_path, finding_rules={"default": rule})
+    with pytest.raises(SemanticError, match=message):
+        load_catalog(tmp_path)
+
+
+def test_finding_rules_lookup_merges_default(tmp_path: Path) -> None:
+    _write_catalog(
+        tmp_path,
+        finding_rules={
+            "default": {"deviation_threshold": 0.20, "severity": "提示"},
+            "metrics": {
+                "gmv": {
+                    "absolute": {"threshold": 100000, "direction": "below", "severity": "关注"}
+                }
+            },
+        },
+    )
+    catalog = load_catalog(tmp_path)
+    assert catalog.finding_rule("gmv")["deviation_threshold"] == 0.20
+    assert catalog.finding_rule("gmv")["absolute"]["threshold"] == 100000
+    assert catalog.finding_rule("不存在") == {"deviation_threshold": 0.20, "severity": "提示"}
+
+
+def test_absolute_rule_requires_threshold(tmp_path: Path) -> None:
+    _write_catalog(tmp_path, finding_rules={"default": {"absolute": {"direction": "above"}}})
+    with pytest.raises(SemanticError, match="absolute 缺少 threshold"):
+        load_catalog(tmp_path)
+
+
+# ---------------------------------------------------------------------------
+# FR-L-5 计数口径校验
+# ---------------------------------------------------------------------------
+
+def _tables_with_dimension(dimension: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "tables": _MIN_TABLES["tables"],
+        "dimensions": [_MIN_TABLES["dimensions"][0], dimension],
+    }
+
+
+def test_count_grain_must_be_declared(tmp_path: Path) -> None:
+    _write_catalog(
+        tmp_path,
+        tables=_tables_with_dimension(
+            {
+                "name": "refund_reason",
+                "display": "退款原因",
+                "expression": "refunds.reason",
+                "tables": ["orders"],
+                "count_grain": "refund_count",
+            }
+        ),
+    )
+    with pytest.raises(SemanticError, match="count_grain 非法"):
+        load_catalog(tmp_path)
+
+
+def test_count_grain_needs_matching_expression(tmp_path: Path) -> None:
+    """声明的口径必须在 count_expressions 里有对应表达式，否则没法执行。"""
+    _write_catalog(
+        tmp_path,
+        tables=_tables_with_dimension(
+            {
+                "name": "refund_reason",
+                "display": "退款原因",
+                "expression": "refunds.reason",
+                "tables": ["orders"],
+                "count_grain": "refund_row",
+                "count_expressions": {"order": "COUNT(DISTINCT o.id)"},
+            }
+        ),
+    )
+    with pytest.raises(SemanticError, match="count_expressions 中没有对应表达式"):
+        load_catalog(tmp_path)
+
+
+def test_count_grain_valid_config_passes(tmp_path: Path) -> None:
+    _write_catalog(
+        tmp_path,
+        tables=_tables_with_dimension(
+            {
+                "name": "refund_reason",
+                "display": "退款原因",
+                "expression": "refunds.reason",
+                "tables": ["orders"],
+                "count_grain": "refund_row",
+                "count_expressions": {
+                    "refund_row": "COUNT(r.id)",
+                    "order": "COUNT(DISTINCT o.id)",
+                },
+            }
+        ),
+    )
+    dimension = load_catalog(tmp_path).dimension_by_name["refund_reason"]
+    assert dimension["count_grain"] == "refund_row"
+
+
+# ---------------------------------------------------------------------------
+# FR-L-1 异常判定规则表校验
+# ---------------------------------------------------------------------------
+
+def test_finding_rules_are_optional(tmp_path: Path) -> None:
+    """规则表缺失时取内建默认值，最小语义目录不必携带它。"""
+    _write_catalog(tmp_path)
+    catalog = load_catalog(tmp_path)
+    assert catalog.finding_rule("gmv") == {}
+
+
+def test_finding_rules_reject_unregistered_metric(tmp_path: Path) -> None:
+    _write_catalog(tmp_path, finding_rules={"default": {}, "metrics": {"nope": {}}})
+    with pytest.raises(SemanticError, match="指标 nope 未在 metrics.yaml 中登记"):
+        load_catalog(tmp_path)
+
+
+@pytest.mark.parametrize(
+    "rule, message",
+    [
+        ({"deviation_threshold": "20%"}, "deviation_threshold 必须是数值"),
+        ({"rank_ratio": 0}, "rank_ratio 必须大于 0"),
+        ({"rank_ratio": 0.6}, "rank_ratio 不应超过 0.5"),
+        ({"min_slices": 1}, "min_slices 至少为 2"),
+        ({"severity": "严重"}, "severity 非法"),
+        ({"absolute": {"direction": "over"}}, "direction 非法"),
+        ({"absolute": {"severity": "严重"}}, "absolute.severity 非法"),
+    ],
+)
+def test_finding_rules_reject_bad_values(
+    tmp_path: Path, rule: dict[str, Any], message: str
+) -> None:
+    _write_catalog(tmp_path, finding_rules={"default": rule})
+    with pytest.raises(SemanticError, match=message):
+        load_catalog(tmp_path)
+
+
+def test_finding_rules_lookup_merges_default(tmp_path: Path) -> None:
+    _write_catalog(
+        tmp_path,
+        finding_rules={
+            "default": {"deviation_threshold": 0.20, "severity": "提示"},
+            "metrics": {
+                "gmv": {
+                    "absolute": {"threshold": 100000, "direction": "below", "severity": "关注"}
+                }
+            },
+        },
+    )
+    catalog = load_catalog(tmp_path)
+    assert catalog.finding_rule("gmv")["deviation_threshold"] == 0.20
+    assert catalog.finding_rule("gmv")["absolute"]["threshold"] == 100000
+    assert catalog.finding_rule("不存在") == {"deviation_threshold": 0.20, "severity": "提示"}
+
+
+def test_absolute_rule_requires_threshold(tmp_path: Path) -> None:
+    _write_catalog(tmp_path, finding_rules={"default": {"absolute": {"direction": "above"}}})
+    with pytest.raises(SemanticError, match="absolute 缺少 threshold"):
+        load_catalog(tmp_path)
+
+
+# ---------------------------------------------------------------------------
+# FR-L-5 计数口径校验
+# ---------------------------------------------------------------------------
+
+def _tables_with_dimension(dimension: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "tables": _MIN_TABLES["tables"],
+        "dimensions": [_MIN_TABLES["dimensions"][0], dimension],
+    }
+
+
+def test_count_grain_must_be_declared(tmp_path: Path) -> None:
+    _write_catalog(
+        tmp_path,
+        tables=_tables_with_dimension(
+            {
+                "name": "refund_reason",
+                "display": "退款原因",
+                "expression": "refunds.reason",
+                "tables": ["orders"],
+                "count_grain": "refund_count",
+            }
+        ),
+    )
+    with pytest.raises(SemanticError, match="count_grain 非法"):
+        load_catalog(tmp_path)
+
+
+def test_count_grain_needs_matching_expression(tmp_path: Path) -> None:
+    """声明的口径必须在 count_expressions 里有对应表达式，否则没法执行。"""
+    _write_catalog(
+        tmp_path,
+        tables=_tables_with_dimension(
+            {
+                "name": "refund_reason",
+                "display": "退款原因",
+                "expression": "refunds.reason",
+                "tables": ["orders"],
+                "count_grain": "refund_row",
+                "count_expressions": {"order": "COUNT(DISTINCT o.id)"},
+            }
+        ),
+    )
+    with pytest.raises(SemanticError, match="count_expressions 中没有对应表达式"):
+        load_catalog(tmp_path)
+
+
+def test_count_grain_valid_config_passes(tmp_path: Path) -> None:
+    _write_catalog(
+        tmp_path,
+        tables=_tables_with_dimension(
+            {
+                "name": "refund_reason",
+                "display": "退款原因",
+                "expression": "refunds.reason",
+                "tables": ["orders"],
+                "count_grain": "refund_row",
+                "count_expressions": {
+                    "refund_row": "COUNT(r.id)",
+                    "order": "COUNT(DISTINCT o.id)",
+                },
+            }
+        ),
+    )
+    dimension = load_catalog(tmp_path).dimension_by_name["refund_reason"]
+    assert dimension["count_grain"] == "refund_row"

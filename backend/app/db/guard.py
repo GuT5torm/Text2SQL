@@ -114,6 +114,33 @@ ALLOWED_FUNCTIONS = frozenset(
 
 _FENCE_RE = re.compile(r"^\s*```(?:sql)?\s*|\s*```\s*$", re.IGNORECASE)
 
+# FR-I-2：九条规则的编号必须出现在用户可读文本里，评测与前端按编号分流，
+# 不再靠中文子串匹配。notice 形如 {"kind": "rejected"/"rewritten",
+# "code": "R3", "message": "R3 ..."}。
+_CODE_RE = re.compile(r"^\s*(R\d)\b")
+
+
+def notice_code(message: str) -> str | None:
+    """从一条告警文本取开头的规则编号（R1–R9），没有编号返回 None。"""
+    match = _CODE_RE.match(message or "")
+    return match.group(1) if match else None
+
+
+def make_notice(kind: str, message: str) -> dict[str, str]:
+    return {"kind": kind, "code": notice_code(message) or "", "message": message}
+
+
+def rejected_notices_from_text(text: str | None) -> list[dict[str, str]]:
+    """从 give_up 落库的 sql_error 文本还原 rejected 通道。
+
+    守卫拒绝时走 give_up，errors 以「；」拼接进 sql_error，结构化对象没有
+    随图终态保留；历史回看与本轮返回都靠这个函数按同一规则还原。
+    执行层错误（SQLite 原始报错、非守卫的失败）没有编号时 code 留空。
+    """
+    if not text:
+        return []
+    return [make_notice("rejected", part.strip()) for part in text.split("；") if part.strip()]
+
 # sqlglot 把逻辑运算符也挂在 Func 之下（And 的 MRO 是 And → Connector → Binary
 # → Func），它们不是函数调用。不排除的话每条带 WHERE 的查询都会被 R9 拦下。
 # 按名称取而不是写属性，理由同 FORBIDDEN_NODES。
@@ -217,6 +244,12 @@ class GuardResult:
     def error_text(self) -> str:
         return "；".join(self.errors)
 
+    def notices(self) -> list[dict[str, str]]:
+        """结构化双通道（FR-I-2）：errors→rejected，warnings→rewritten。"""
+        return [make_notice("rejected", e) for e in self.errors] + [
+            make_notice("rewritten", w) for w in self.warnings
+        ]
+
 
 class SqlGuard:
     """按语义层的表与字段白名单校验 SQL。"""
@@ -227,8 +260,9 @@ class SqlGuard:
         self.dialect = dialect
 
     @classmethod
-    def from_catalog(cls, catalog: Any, max_rows: int = 1000) -> "SqlGuard":
-        return cls(catalog.all_field_refs(), max_rows=max_rows)
+    def from_catalog(cls, catalog: Any, max_rows: int = 1000, dialect: str = "sqlite") -> "SqlGuard":
+        """从语义层装配守卫。dialect 由配置传入（FR-J-2），不再硬编码。"""
+        return cls(catalog.all_field_refs(), max_rows=max_rows, dialect=dialect)
 
     # —— 对外入口 ——
     def check(self, sql: str) -> GuardResult:
@@ -237,24 +271,24 @@ class SqlGuard:
         warnings: list[str] = []
 
         if not original:
-            return GuardResult(False, "", original, errors=["生成的 SQL 为空"])
+            return GuardResult(False, "", original, errors=["R1 生成的 SQL 为空"])
 
         # R1 单条语句
         try:
             statements = [s for s in sqlglot.parse(original, read=self.dialect) if s is not None]
         except Exception as exc:  # sqlglot 的解析异常类型随版本变化，统一兜住
             return GuardResult(
-                False, original, original, errors=[f"SQL 解析失败，无法校验：{exc}"]
+                False, original, original, errors=[f"R1 SQL 解析失败，无法校验：{exc}"]
             )
 
         if len(statements) == 0:
-            return GuardResult(False, original, original, errors=["未解析出任何语句"])
+            return GuardResult(False, original, original, errors=["R1 未解析出任何语句"])
         if len(statements) > 1:
             return GuardResult(
                 False,
                 original,
                 original,
-                errors=[f"检测到 {len(statements)} 条语句，只允许单条查询"],
+                errors=[f"R1 检测到 {len(statements)} 条语句，只允许单条查询"],
             )
 
         stmt = statements[0]
@@ -262,14 +296,14 @@ class SqlGuard:
         # R2 语句类型
         if not isinstance(stmt, ALLOWED_STATEMENTS):
             errors.append(
-                f"只允许 SELECT 查询，当前语句类型为 {type(stmt).__name__.upper()}"
+                f"R2 只允许 SELECT 查询，当前语句类型为 {type(stmt).__name__.upper()}"
             )
 
         # R3 危险节点
         for forbidden in FORBIDDEN_NODES:
             found = stmt.find(forbidden)
             if found is not None:
-                errors.append(f"语句中包含被禁止的 {type(found).__name__.upper()} 操作")
+                errors.append(f"R3 语句中包含被禁止的 {type(found).__name__.upper()} 操作")
                 break
 
         # R4 / R7 表与连接
@@ -298,7 +332,7 @@ class SqlGuard:
         final_sql, applied = self._enforce_limit(original, stmt)
         if applied:
             warnings.append(
-                f"原语句未限定或超出结果行数上限，已包裹为最多返回 {applied} 行"
+                f"R6 原语句未限定或超出结果行数上限，已包裹为最多返回 {applied} 行"
             )
 
         return GuardResult(

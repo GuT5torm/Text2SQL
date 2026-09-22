@@ -38,6 +38,7 @@ def route_node(state: AgentState, *, gateway: Gateway, history_window: int = 6) 
         return {
             "intent": "query",
             "intent_reason": f"意图识别调用失败，已按取数处理：{exc}",
+            "slots": {},
             "stages": [
                 new_stage(NODE, "理解问题", "识别服务异常，按取数继续", _ms(started))
             ],
@@ -46,6 +47,9 @@ def route_node(state: AgentState, *, gateway: Gateway, history_window: int = 6) 
     update: dict[str, Any] = {
         "intent": decision.intent,
         "intent_reason": decision.reason,
+        # FR-A-5：把结构化槽位写回 state，供 summarize_result 与前端标注。
+        # slots 是 dict，LangGraph 对 TypedDict 里声明的 dict 键做整体替换。
+        "slots": dict(decision.slots or {}),
         "stages": [
             new_stage(
                 NODE,
@@ -71,15 +75,25 @@ def route_node(state: AgentState, *, gateway: Gateway, history_window: int = 6) 
     if rewritten and rewritten != question:
         # 补全后的问题写回 question，下游节点与落库记录都用它
         update["question"] = rewritten
+    # FR-H-3：两个版本都留在状态里。original_question 此前是死字段（声明并赋值
+    # 但无人读取），改写句又覆盖了 question，回看时看不出这一轮发生了指代消解。
+    update["rewritten_question"] = rewritten or question
 
     return update
 
 
 def _describe(decision: RouteDecision) -> str:
+    """阶段详情文案。FR-A-2：主语省略的追问被补全后，时间线要显示改写结果，
+    让用户看到「我问的」与「系统实际处理的」之间的差异。"""
     if decision.intent == "chitchat":
         return "判定为闲聊"
     if decision.intent == "clarify":
         return "信息不足，需要反问用户"
+    rewritten = (decision.rewritten_question or "").strip()
+    if rewritten:
+        # 截断到 60 字，避免时间线条目被长问句撑开。
+        snippet = rewritten if len(rewritten) <= 60 else rewritten[:59] + "…"
+        return f"判定为取数问题（改写后：{snippet}）"
     return "判定为取数问题"
 
 

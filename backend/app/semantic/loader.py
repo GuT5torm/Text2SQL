@@ -29,9 +29,18 @@ MAX_METRICS = 3
 MAX_TABLES = 5
 MAX_EXAMPLES = 3
 
+# FR-L-5 允许的计数口径。refund_row 按退款笔数，order 按订单数；
+# 两者在「一单多退」下不是同一个数，维度必须显式声明取哪一个。
+COUNT_GRAINS = {"refund_row", "order"}
+
 
 class SemanticError(RuntimeError):
     """语义层配置不自洽。错误信息会列出全部问题，便于一次性改完。"""
+
+
+# FR-I-3：脱敏掩码的种类。phone 前 3 后 4，idcard 前 6 后 4，
+# other 用定长占位符——任何敏感字段都必须显式声明用哪一种。
+VALID_MASK_KINDS = {"phone", "idcard", "other"}
 
 
 @dataclass(frozen=True)
@@ -83,11 +92,21 @@ class Catalog:
     synonyms: list[dict[str, Any]]
     value_synonyms: list[dict[str, Any]]
     time_terms: list[dict[str, Any]]
+    # FR-M-3 基准规则表。default 键存默认规则，其余键为指标名
+    baseline_rules: dict[str, dict[str, Any]] = field(default_factory=dict)
+    # FR-L-1 异常判定规则表，结构同上：default + 指标名 → 规则
+    finding_rules: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     # —— 派生索引，加载时一次建好 ——
     metric_by_name: dict[str, dict[str, Any]] = field(default_factory=dict)
     table_by_name: dict[str, dict[str, Any]] = field(default_factory=dict)
     dimension_by_name: dict[str, dict[str, Any]] = field(default_factory=dict)
+    # 指标 display（中文名）→ name。metric_used 里放的是 display，
+    # 规则表按 name 索引，两处需要一个反向映射
+    metric_name_by_display: dict[str, str] = field(default_factory=dict)
+    # FR-I-3：敏感字段派生索引。键统一小写，形如 "users.phone"；
+    # 值为 {"mask": "phone", "display": "手机号", "table": "users"}
+    sensitive_fields: dict[str, dict[str, str]] = field(default_factory=dict)
 
     def all_field_refs(self) -> dict[str, set[str]]:
         """表名 → 该表的合法字段集合。字段白名单校验的唯一来源。"""
@@ -95,8 +114,53 @@ class Catalog:
             t["name"]: {f["name"] for f in t.get("fields", [])} for t in self.tables
         }
 
+    def mask_kind(self, table: str | None, column: str) -> str | None:
+        """按 表.字段 或物理字段名 / 中文显示名查掩码种类，查不到返回 None。
+
+        结果集的列可能是物理名（phone）、带表限定名（u.phone 被驱动展平后
+        仍是 phone）或中文别名（AS 手机号），三种写法都要能命中。
+        """
+        col = (column or "").lower()
+        if table:
+            hit = self.sensitive_fields.get(f"{table.lower()}.{col}")
+            if hit:
+                return hit["mask"]
+        for entry in self.sensitive_fields.values():
+            if col in {entry["field"].lower(), entry["display"].lower()}:
+                return entry["mask"]
+        return None
+
     def table_names(self) -> set[str]:
         return set(self.table_by_name)
+
+    def baseline_rule(self, metric: str | None) -> dict[str, Any]:
+        """取某个指标的基准规则。未配置或指标为空时返回 default。
+
+        入参既可能是指标名（gmv）也可能是显示名（成交总额）——编排层的
+        metric_used 来自模型输出或召回结果，两者都出现过，这里都认。
+        """
+        default = dict(self.baseline_rules.get("default") or {})
+        if not metric:
+            return default
+        name = metric if metric in self.baseline_rules else self.metric_name_by_display.get(metric)
+        if name is None:
+            return default
+        return {**default, **(self.baseline_rules.get(name) or {})}
+
+    def finding_rule(self, metric: str | None) -> dict[str, Any]:
+        """取某个指标的异常判定规则。未配置或指标为空时返回 default。
+
+        与 baseline_rule 同构：入参既可能是指标名也可能是显示名，配置只写
+        差异项，未写的字段从 default 继承。规则表缺省时返回空字典，由
+        findings.py 的内建默认值兜底。
+        """
+        default = dict(self.finding_rules.get("default") or {})
+        if not metric:
+            return default
+        name = metric if metric in self.finding_rules else self.metric_name_by_display.get(metric)
+        if name is None:
+            return default
+        return {**default, **(self.finding_rules.get(name) or {})}
 
 
 # --------------------------------------------------------------------------
@@ -115,12 +179,36 @@ def _read_yaml(path: Path) -> dict[str, Any]:
     return data
 
 
+def _read_yaml_optional(path: Path) -> dict[str, Any]:
+    """可选配置：文件不存在时返回空字典。
+
+    只有异常判定规则表用这种方式读取。基准规则表缺了会让「未配置的指标取
+    哪套规则」无从落地，必须报错；异常判定规则即使完全不配也有可用的内建
+    默认值（阈值写在 findings.py），缺文件不该让整个应用起不来。
+    """
+    if not path.exists():
+        return {}
+    return _read_yaml(path)
+
+
 def load_catalog(semantic_dir: Path | None = None) -> Catalog:
     """加载三份 YAML 并做一致性校验。任何不一致都会一次性列出。"""
     base = semantic_dir or SEMANTIC_DIR
     tables_doc = _read_yaml(base / "tables.yaml")
     metrics_doc = _read_yaml(base / "metrics.yaml")
     syn_doc = _read_yaml(base / "synonyms.yaml")
+    rules_doc = _read_yaml(base / "baseline_rules.yaml") or {}
+    # 规则表是「default + 指标名 → 规则」的扁平映射，yaml 里用 metrics 包一层
+    # 只为可读性，加载时压平：后续所有查找都按指标名直接取。
+    flat_rules: dict[str, dict[str, Any]] = {"default": rules_doc.get("default") or {}}
+    for name, rule in (rules_doc.get("metrics") or {}).items():
+        if isinstance(rule, dict):
+            flat_rules[name] = rule
+    finding_doc = _read_yaml_optional(base / "finding_rules.yaml") or {}
+    flat_finding: dict[str, dict[str, Any]] = {"default": finding_doc.get("default") or {}}
+    for name, rule in (finding_doc.get("metrics") or {}).items():
+        if isinstance(rule, dict):
+            flat_finding[name] = rule
 
     catalog = Catalog(
         metrics=metrics_doc.get("metrics") or [],
@@ -129,10 +217,25 @@ def load_catalog(semantic_dir: Path | None = None) -> Catalog:
         synonyms=syn_doc.get("synonyms") or [],
         value_synonyms=syn_doc.get("value_synonyms") or [],
         time_terms=syn_doc.get("time_terms") or [],
+        baseline_rules=flat_rules,
+        finding_rules=flat_finding,
     )
     catalog.metric_by_name = {m["name"]: m for m in catalog.metrics}
     catalog.table_by_name = {t["name"]: t for t in catalog.tables}
     catalog.dimension_by_name = {d["name"]: d for d in catalog.dimensions}
+    catalog.metric_name_by_display = {
+        m["display"]: m["name"] for m in catalog.metrics if m.get("display")
+    }
+    # FR-I-3：敏感字段索引，供出参掩码管道（app/db/masking.py）使用
+    for _t in catalog.tables:
+        for _f in _t.get("fields") or []:
+            if _f.get("sensitive"):
+                catalog.sensitive_fields[f"{_t['name']}.{_f['name']}".lower()] = {
+                    "table": _t["name"],
+                    "field": _f["name"],
+                    "display": _f.get("display") or _f["name"],
+                    "mask": _f.get("mask") or "other",
+                }
 
     problems = _validate(catalog)
     if problems:
@@ -192,6 +295,20 @@ def _validate(c: Catalog) -> list[str]:
                     problems.append(f"{tname}.{fname} 的 ref 指向未登记的表 {rt}")
                 elif rf not in {x["name"] for x in c.table_by_name[rt].get("fields", [])}:
                     problems.append(f"{tname}.{fname} 的 ref 指向不存在的字段 {ref}")
+            # FR-I-3：敏感字段必须声明合法 mask，且只能是 TEXT——
+            # 数值/日期类型谈不上「脱敏」，标了 sensitive 多半是配置写错。
+            if f.get("sensitive"):
+                mask = f.get("mask")
+                if mask not in VALID_MASK_KINDS:
+                    problems.append(
+                        f"表 {tname} 的敏感字段 {fname} 的 mask 非法：{mask}"
+                        f"（允许 {sorted(VALID_MASK_KINDS)}）"
+                    )
+                if str(f.get("type") or "").upper() != "TEXT":
+                    problems.append(
+                        f"表 {tname} 的敏感字段 {fname} 必须为 TEXT 类型，"
+                        f"当前为 {f.get('type')}"
+                    )
 
     # 维度：依赖的表必须存在
     for d in c.dimensions:
@@ -204,6 +321,26 @@ def _validate(c: Catalog) -> list[str]:
         for t in d.get("tables") or []:
             if t not in table_names:
                 problems.append(f"维度 {dname} 引用了未登记的表 {t}")
+
+    # FR-L-5：声明了计数口径的维度，口径取值与表达式必须自洽。
+    # 一单多退的场景下「按笔数」与「按订单数」是两套数，口径写错不会报错，
+    # 只会让各原因的占比之和超过整体，因此放在加载期就校验。
+    for d in c.dimensions:
+        dname = d.get("name") or "未命名维度"
+        grain = d.get("count_grain")
+        if grain is None:
+            continue
+        if grain not in COUNT_GRAINS:
+            problems.append(
+                f"维度 {dname} 的 count_grain 非法：{grain}（可选 {'/'.join(sorted(COUNT_GRAINS))}）"
+            )
+            continue
+        exprs = d.get("count_expressions") or {}
+        if not isinstance(exprs, dict):
+            problems.append(f"维度 {dname} 的 count_expressions 必须是映射")
+            continue
+        if grain not in exprs:
+            problems.append(f"维度 {dname} 声明的 count_grain={grain} 在 count_expressions 中没有对应表达式")
 
     # 同义词：指标类要指向真实指标，表 / 字段类要指向真实表或 表.字段
     for s in c.synonyms:
@@ -241,6 +378,185 @@ def _validate(c: Catalog) -> list[str]:
         elif fname not in {x["name"] for x in t.get("fields", [])}:
             problems.append(f"枚举值口语「{term}」指向不存在的字段 {fld}")
 
+    # FR-M-4：含 enum 的字段必须说明划分依据。definition 缺失或纯空白都视为配置错误，
+    # 因为「为什么是这 7 个大区」「为什么是这 4 个退款原因」这一类问题口径面板（FR-D-3）
+    # 必须能直接回答，把依据写进字段比靠注释稳。
+    for _t in c.tables:
+        _tname = _t.get("name")
+        for _f in _t.get("fields") or []:
+            if not _f.get("enum"):
+                continue
+            _definition = (_f.get("definition") or "").strip()
+            if not _definition:
+                problems.append(
+                    f"表 {_tname} 的字段 {_f.get('name')} 含 enum 但缺少 definition"
+                    + "（FR-M-4：需说明划分依据，如收货地址 / 状态机 / 注册入口 / 退款原因归类）"
+                )
+
+    problems += _validate_baseline_rules(c)
+    problems += _validate_finding_rules(c)
+
+    # FR-M-5：声明同一 denominator 的指标，其 orders.status 过滤必须严格一致。
+    # 没有 denominator 的指标不参与校验——它代表的是另一种分母概念（金额、件数等），
+    # 校验目的只是阻止「同一分母却用不同状态过滤」这种会让比较错位的配置。
+    _denom_groups: dict[str, list[tuple[str, frozenset[str]]]] = {}
+    for _m in c.metrics:
+        _denom = _m.get("denominator")
+        if not _denom:
+            continue
+        _sf = frozenset(
+            _f.strip()
+            for _f in (_m.get("required_filters") or [])
+            if "orders.status" in _f
+        )
+        _denom_groups.setdefault(_denom, []).append((_m.get("name", "?"), _sf))
+
+    for _denom, _members in _denom_groups.items():
+        _unique = {s for _, s in _members}
+        if len(_unique) <= 1:
+            continue
+        for _name, _sf in _members:
+            _others = sorted(
+                {n for n, s in _members if s and s != _sf}
+                | {f"{n}（无 status 过滤）" for n, s in _members if not s and s != _sf},
+            )
+            problems.append(
+                f"分母概念 '{_denom}' 不一致：指标 {_name} 的 orders.status 过滤为 "
+                f"{sorted(_sf) if _sf else '（无）'}，与 {_others} 冲突"
+                + "（FR-M-5：同一分母的指标必须使用相同的订单状态过滤）"
+            )
+
+    return problems
+
+
+# --------------------------------------------------------------------------
+# FR-M-3 基准规则表校验
+# --------------------------------------------------------------------------
+
+# 粒度由粗到细。baselines 模块用同一组常量做「细于下限则跳过」的比较，
+# 两处必须一致，否则规则表写 week 而代码按另一套序排会出现反向判定。
+GRANULARITY_ORDER: tuple[str, ...] = ("day", "week", "month", "year")
+VALID_GRANULARITIES = set(GRANULARITY_ORDER)
+
+
+def _validate_baseline_rules(c: Catalog) -> list[str]:
+    """规则表校验：必须有 default；指标键必须是已登记指标；粒度取值合法。
+
+    default 缺失会让「未配置的指标取默认规则」这条退化成取空字典，调用方
+    拿不到 mom / yoy 开关，只能靠代码里的兜底常量——那等于把规则又硬编码
+    了一遍，因此这里按错误而不是警告处理。
+    """
+    problems: list[str] = []
+    rules = c.baseline_rules
+    if not rules:
+        # 未配置规则表（测试里手工构造的 Catalog）时不校验。load_catalog 总会
+        # 至少填入 default 一份，因此这里只放过「整表缺失」，不放过「表内缺 default」。
+        return []
+
+    default = rules.get("default")
+    if not isinstance(default, dict) or not default:
+        problems.append("baseline_rules.yaml 缺少 default 规则组")
+
+    for key, rule in rules.items():
+        if key == "default":
+            continue
+        if key not in c.metric_by_name:
+            problems.append(f"baseline_rules.yaml 的指标 {key} 未在 metrics.yaml 中登记")
+        gran = rule.get("granularity")
+        if gran is not None and gran != "auto" and gran not in VALID_GRANULARITIES:
+            problems.append(
+                f"baseline_rules.yaml 的指标 {key} 的 granularity 非法：{gran}"
+                f"（允许 {sorted(VALID_GRANULARITIES)} 或 auto）"
+            )
+        min_gran = rule.get("min_granularity")
+        if min_gran is not None and min_gran not in VALID_GRANULARITIES:
+            problems.append(
+                f"baseline_rules.yaml 的指标 {key} 的 min_granularity 非法：{min_gran}"
+                f"（允许 {sorted(VALID_GRANULARITIES)}）"
+            )
+        for flag in ("mom", "yoy"):
+            if flag in rule and not isinstance(rule[flag], bool):
+                problems.append(f"baseline_rules.yaml 的指标 {key} 的 {flag} 必须是布尔值")
+    return problems
+
+
+# --------------------------------------------------------------------------
+# FR-L-1 异常判定规则表校验
+# --------------------------------------------------------------------------
+
+VALID_SEVERITIES = {"提示", "关注"}
+VALID_DIRECTIONS = {"above", "below"}
+
+
+def _validate_finding_rules(c: Catalog) -> list[str]:
+    """规则表校验：指标键已登记；阈值与比例是数值且在合理区间；严重度合法。
+
+    阈值写成字符串或百分数（20 而不是 0.2）是这类配置最容易出的错，且错了
+    不报异常——比较时 Python 会抛 TypeError 被 enrich 兜住，表现为「异常
+    标记一个都不出」。放在加载期拦下。
+    """
+    problems: list[str] = []
+    rules = c.finding_rules
+    if not rules:
+        return []
+
+    for key, rule in rules.items():
+        label = "default" if key == "default" else f"指标 {key}"
+        if key != "default" and key not in c.metric_by_name:
+            problems.append(f"finding_rules.yaml 的指标 {key} 未在 metrics.yaml 中登记")
+
+        for field_name in ("deviation_threshold", "rank_ratio", "severity_ratio"):
+            value = rule.get(field_name)
+            if value is None:
+                continue
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                problems.append(f"finding_rules.yaml 的 {label} 的 {field_name} 必须是数值")
+            elif value <= 0:
+                problems.append(f"finding_rules.yaml 的 {label} 的 {field_name} 必须大于 0")
+
+        rank_ratio = rule.get("rank_ratio")
+        if isinstance(rank_ratio, (int, float)) and not isinstance(rank_ratio, bool):
+            if rank_ratio > 0.5:
+                problems.append(
+                    f"finding_rules.yaml 的 {label} 的 rank_ratio 不应超过 0.5"
+                    "（超过则前后各一半，所有切片都是异常）"
+                )
+
+        min_slices = rule.get("min_slices")
+        if min_slices is not None:
+            if isinstance(min_slices, bool) or not isinstance(min_slices, int):
+                problems.append(f"finding_rules.yaml 的 {label} 的 min_slices 必须是整数")
+            elif min_slices < 2:
+                problems.append(f"finding_rules.yaml 的 {label} 的 min_slices 至少为 2")
+
+        severity = rule.get("severity")
+        if severity is not None and severity not in VALID_SEVERITIES:
+            problems.append(
+                f"finding_rules.yaml 的 {label} 的 severity 非法：{severity}"
+                f"（允许 {sorted(VALID_SEVERITIES)}）"
+            )
+
+        absolute = rule.get("absolute")
+        if absolute is None:
+            continue
+        if not isinstance(absolute, dict):
+            problems.append(f"finding_rules.yaml 的 {label} 的 absolute 必须是映射")
+            continue
+        threshold = absolute.get("threshold")
+        if threshold is None:
+            problems.append(f"finding_rules.yaml 的 {label} 的 absolute 缺少 threshold")
+        elif isinstance(threshold, bool) or not isinstance(threshold, (int, float)):
+            problems.append(f"finding_rules.yaml 的 {label} 的 absolute.threshold 必须是数值")
+        direction = absolute.get("direction", "above")
+        if direction not in VALID_DIRECTIONS:
+            problems.append(
+                f"finding_rules.yaml 的 {label} 的 absolute.direction 非法：{direction}"
+                f"（允许 {sorted(VALID_DIRECTIONS)}）"
+            )
+        if absolute.get("severity") is not None and absolute["severity"] not in VALID_SEVERITIES:
+            problems.append(
+                f"finding_rules.yaml 的 {label} 的 absolute.severity 非法：{absolute['severity']}"
+            )
     return problems
 
 
@@ -601,7 +917,7 @@ def render_context(hit: SemanticHit) -> str:
     if hit.dimensions:
         rows = [
             f"- {d['display']}（{d['name']}）：`{d['expression']}`"
-            + (f"  {d['note']}" if d.get("note") else "")
+            + (f"  {d.get('note')}" if d.get("note") else "")
             for d in hit.dimensions
         ]
         parts.append("## 可用维度\n" + "\n".join(rows))

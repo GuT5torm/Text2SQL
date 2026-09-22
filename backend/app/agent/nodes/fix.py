@@ -28,6 +28,13 @@ NODE = "fix"
 
 def fix_node(state: AgentState, *, gateway: Gateway) -> dict[str, Any]:
     started = time.monotonic()
+
+    # FR-F-1：空结果走另一条回灌路径。它与报错修正共用 fix 节点（都是「换一条
+    # 语句再试」），但输入不同——报错有原始报错可依据，空结果只有「0 行」这个
+    # 事实，judgement 是「放宽」还是「确认无数据」。两条路径的计数也分开。
+    if state.get("empty_result") and not state.get("no_data_confirmed"):
+        return _fix_empty_result(state, gateway, started)
+
     retrieved = state.get("retrieved") or {}
     sql = state.get("sql") or ""
     error = state.get("sql_error") or "（未提供报错信息）"
@@ -63,6 +70,9 @@ def fix_node(state: AgentState, *, gateway: Gateway) -> dict[str, Any]:
         "sql": draft.sql,
         "sql_error": None,
         "retry_count": attempt,
+        # FR-C-1：fix 节点把最后一次修正理由写入 fix_reasoning，供 SqlPanel 折叠项用。
+        # 这样回看时既能看到原始 generate 的 reason，也能看到 fix 的 reason。
+        "fix_reasoning": draft.reasoning or "",
         # 状态里已有原语句，修正后不再覆盖 original_sql，保留首次生成的版本用于回溯
         "stages": [
             new_stage(
@@ -73,6 +83,77 @@ def fix_node(state: AgentState, *, gateway: Gateway) -> dict[str, Any]:
             )
         ],
     }
+
+
+def _fix_empty_result(
+    state: AgentState, gateway: Gateway, started: float
+) -> dict[str, Any]:
+    """FR-F-1：执行成功但 0 行时的回灌。
+
+    配额用 empty_retry 而不是 retry_count——两类失败共享配额时，一次空结果
+    回灌会吃掉一次本该留给报错修正的机会。同理，这里不写 retry_count，
+    否则界面上的「修正 N 次」会把放宽条件也算成修正。
+
+    模型可以回答「确认无数据」。这是这条需求里最关键的一条约束：回灌必须允许
+    「不改」这个答案，否则系统会为了凑出行数把条件放宽到失真。
+    """
+    attempt = int(state.get("empty_retry") or 0) + 1
+    retrieved = state.get("retrieved") or {}
+    freshness = state.get("data_freshness") or {}
+    cutoff = freshness.get("orders_cutoff") or freshness.get("refunds_cutoff") or "未知"
+
+    prompt = render_prompt(
+        "fix_empty",
+        question=state.get("question") or "",
+        context=retrieved.get("context") or "（无）",
+        sql=state.get("sql") or "",
+        data_cutoff=cutoff,
+    )
+
+    try:
+        draft = gateway.complete_json(prompt, SqlDraft, tag=NODE)
+    except LLMError as exc:
+        logger.warning("第 %d 次空结果回灌失败：%s", attempt, exc)
+        return {
+            # 回灌自身失败也计入配额，否则会与路由的空转条件互相错过
+            "empty_retry": attempt,
+            "empty_result": False,
+            "stages": [new_stage(NODE, "放宽条件", f"回灌失败：{exc}", _ms(started))],
+        }
+
+    base = {
+        "empty_retry": attempt,
+        "empty_result": False,
+        "fix_reasoning": draft.reasoning or "",
+    }
+
+    if draft.confirm_no_data or not (draft.sql or "").strip():
+        reason = (draft.reasoning or "").strip() or "该条件下订单表与退款表均无匹配记录"
+        base.update(
+            {
+                "no_data_confirmed": True,
+                "stages": [
+                    new_stage(NODE, "放宽条件", f"判定确认无数据：{reason[:60]}", _ms(started))
+                ],
+            }
+        )
+        return base
+
+    base.update(
+        {
+            "sql": draft.sql,
+            "sql_error": None,
+            "stages": [
+                new_stage(
+                    NODE,
+                    "放宽条件",
+                    f"已放宽条件重查：{draft.reasoning or '未给出理由'}"[:60],
+                    _ms(started),
+                )
+            ],
+        }
+    )
+    return base
 
 
 def _render_fix_history(items: list[dict[str, str]]) -> str:

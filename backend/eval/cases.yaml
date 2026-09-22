@@ -21,15 +21,39 @@
 #   empty        为 true 时期望什么都没召回，用于闲聊类问题
 #
 # pipeline.expect 的子字段：
-#   status     期望的终态
-#   min_rows   期望的最小返回行数
-#   chart_type 期望的图型，取值 line / bar / pie / table
+#   status         期望的终态
+#   min_rows       期望的最小返回行数
+#   chart_type     期望的图型，取值 line / bar / pie / table
 #   requires_llm   true 表示该分支在桩实现下走不到，仅真实模型参与统计
+#   dimensions     期望 SQL 的 SELECT/GROUP BY 中含这些维度名（不区分大小写，
+#                  子串匹配），用于验证语义层召回的维度真的写进了语句
+#   granularity    期望的时间粒度，取值 day / week / month / quarter / year，
+#                  通过 SQL 中是否出现对应 strftime 模式判定
+#   sql_contains   期望 SQL 文本中必须出现的子串列表，不区分大小写
+#   must_join      期望 SQL 中必须出现的 JOIN 目标表名列表，不区分大小写
+#   filters        期望的过滤条件键值列表（占位字段名，为 RouteDecision.slots
+#                  落地后的同构约束预留，暂不在 case 中使用）
+#   order_by       期望的排序方向（占位字段名，同上）
+#   top_n          期望的 TopN 阈值（占位字段名，同上）
 #
 # safety 组：
-#   inject_sql  绕过模型直接注入的语句，用于验证守卫是最后一道防线而非模型自觉
-#   expect.blocked  true 期望语句未被执行成功；false 期望被限流改写后放行
-#   expect.max_rows 放行时期望的行数上限
+#   inject_sql     绕过模型直接注入的语句，用于验证守卫是最后一道防线而非模型自觉
+#   expect.blocked    true 期望语句未被执行成功；false 期望被限流改写后放行
+#   expect.max_rows   放行时期望的行数上限
+#
+# datalineage 组（对应 FR-D-1、FR-D-2、FR-D-4；FR-D-5 待第 7 批补）：
+#   status                          期望的终态
+#   min_rows                        期望的最小返回行数
+#   requires_llm                    true 表示该分支在桩实现下走不到，仅真实模型参与统计
+#   source_tables                   期望 SQL 实际访问的表名集合（子集判定，不要求顺序）；
+#                                   与语义层召回的 retrieved.tables 是两个概念
+#   freshness_present               期望 data_freshness 字段为 dict 且含 orders_cutoff /
+#                                   refunds_cutoff / threshold_days 三个键
+#   freshness_orders_cutoff_iso     期望 data_freshness.orders_cutoff 为 YYYY-MM-DD
+#   freshness_refunds_cutoff_iso    期望 data_freshness.refunds_cutoff 为 YYYY-MM-DD
+#
+# 字段名白名单：expect 中出现的所有键必须落在上方四组允许列表内，由
+# run_eval.py:EXPECT_FIELDS 强制校验。新增字段时三处同时改：注释、cases、白名单。
 
 version: 1
 
@@ -303,6 +327,48 @@ groups:
         expect:
           empty: true
 
+      # —— FR-L-3 退款原因维度 ——
+      - id: reason-p001
+        question: 各退款原因的退款率
+        intent: FR-L-3 新增 refund_reason 维度，按原因拆分要能召回该维度
+        expect:
+          metrics: [refund_rate]
+          dimensions: [refund_reason]
+
+      - id: reason-p002
+        question: 按退货原因看下退款率
+        intent: 「退货原因」是 refund_reason 的同义词，与「退款原因」等价
+        expect:
+          metrics: [refund_rate]
+          dimensions: [refund_reason]
+
+      - id: reason-p003
+        question: 七天无理由的退款有多少
+        intent: FR-L-3 四类原因之一；说出具体原因应同时带出维度与取值提示
+        expect:
+          dimensions: [refund_reason]
+          value_hints: ["refunds.reason = '七天无理由'"]
+
+      - id: reason-p004
+        question: 质量问题的退款率是多少
+        intent: 同上，走「质量问题」枚举值
+        expect:
+          metrics: [refund_rate]
+          dimensions: [refund_reason]
+          value_hints: ["refunds.reason = '质量问题'"]
+
+      - id: reason-p005
+        question: 发错货和买家拒收的退款分别有多少
+        intent: 两个原因同时出现时维度只召回一次，两条取值提示都要有。
+                不能写成「分别退了多少」——那句会被近似匹配到销量与毛利，
+                而这两个指标没有声明 refund_reason，维度会被「指标声明过」
+                这一步过滤掉
+        expect:
+          dimensions: [refund_reason]
+          value_hints:
+            - "refunds.reason = '发错货'"
+            - "refunds.reason = '买家拒收'"
+
   pipeline:
     description: 端到端链路。跑完整张图，看能否产出结果。
     scoring: status 达标且 rows 达到下限计通过。
@@ -354,6 +420,9 @@ groups:
           status: ok
           min_rows: 1
           chart_type: line
+          dimensions: [order_date]
+          granularity: day
+          sql_contains: [order_date]
 
       - id: flow-p007
         question: 上周各城市的订单量
@@ -362,6 +431,9 @@ groups:
           status: ok
           min_rows: 1
           chart_type: bar
+          dimensions: [city]
+          must_join: [users]
+          sql_contains: [users]
 
       - id: flow-p008
         question: 上个月各会员等级的客单价
@@ -369,6 +441,9 @@ groups:
         expect:
           status: ok
           min_rows: 1
+          dimensions: [user_level]
+          must_join: [users]
+          sql_contains: [user_level]
 
       - id: flow-p009
         question: 上个月各种支付方式的下单人数
@@ -376,6 +451,7 @@ groups:
         expect:
           status: ok
           min_rows: 1
+          sql_contains: [orders]
 
       - id: flow-p010
         question: 你好呀
@@ -458,3 +534,484 @@ groups:
         expect:
           blocked: true
           status: error
+
+  datalineage:
+    description: >
+      数据血缘字段断言：来源表（FR-D-1）与数据时效（FR-D-2）。FR-D-4 在桩实现
+      下因 metric_used 恒为空而被默认覆盖，不单独开字段。FR-D-5（time_range
+      _mismatch）登记在第 7 批，待字段落库后补一条用例；本组当前 3 条不依赖。
+    scoring: source_tables 子集命中、freshness 字段齐备且关键日期为 ISO 即通过。
+    cases:
+      - id: line-d001
+        question: 今年以来各区域的退款率
+        intent: >
+          FR-D-1 双表访问：mock 命中「退款」关键词返回 LEFT JOIN refunds 的
+          模板，source_tables 应包含 orders 与 refunds。
+          FR-D-2 同时验证时效字段齐备。
+        expect:
+          status: ok
+          min_rows: 1
+          source_tables: [orders, refunds]
+          freshness_present: true
+
+      - id: line-d002
+        question: 各品类今年的毛利
+        intent: >
+          FR-D-1 四表 JOIN：mock 命中「品类」关键词返回 JOIN order_items /
+          products / categories 的四表模板，source_tables 应至少包含这四张
+          表。验证 sqlglot 解析不漏掉任何 JOIN 目标。
+        expect:
+          status: ok
+          min_rows: 1
+          source_tables: [orders, order_items, products, categories]
+          freshness_present: true
+
+      - id: line-d003
+        question: 上个月各区域的成交总额
+        intent: >
+          FR-D-2 时效字段值合规：orders_cutoff 与 refunds_cutoff 都应是
+          YYYY-MM-DD 格式的 ISO 日期字符串（来自库内 MAX(created_at)）。
+        expect:
+          status: ok
+          min_rows: 1
+          freshness_present: true
+          freshness_orders_cutoff_iso: true
+          freshness_refunds_cutoff_iso: true
+
+      - id: line-d004
+        question: 上个月各区域的成交总额
+        intent: >
+          FR-D-5 时间区间不一致：召回解析出了「上个月」区间，但桩模板生成的
+          SQL 不带任何时间谓词，time_range_consistent 必须为 false 而不是
+          静默放行——这正是该核对器要拦的「口径说上月、SQL 查全量」。
+        expect:
+          status: ok
+          min_rows: 1
+          time_range_consistent: false
+
+      - id: line-d005
+        question: 各渠道的订单量
+        intent: >
+          FR-D-5 边界：问句本身不含时间词，没有可核对的召回区间，
+          time_range_consistent 应为 null（不判一致也不判不一致）。
+        expect:
+          status: ok
+          min_rows: 1
+          time_range_consistent: null
+
+  baseline:
+    description: >
+      对比基准（FR-M-1 至 FR-M-3）。走完整张图，只断言基准相关字段：
+      是否给出环比同比、不完整周期是否隔离、规则表是否生效、每轮额外查询
+      是否收敛在上限内。基准计算是服务端确定性规则，桩模式下结论同样有效。
+    scoring: 各条 expect 的断言全部成立即通过。时间断言只判结构与状态，
+      不写绝对日期——链路里的「今天」取系统日期，写死月份会让整组在下月变红。
+    cases:
+      - id: base-m001
+        question: 上个月各区域的成交总额
+        intent: >
+          FR-M-1 正常路径：完整月份应同时给出环比与同比，comparable 为 true，
+          note 为空（有基准时不给「无对比期数据」）。
+        expect:
+          status: ok
+          min_rows: 1
+          granularity: month
+          mom_present: true
+          yoy_present: true
+          mom_comparable: true
+          partial_period: false
+          note: ""
+          # 1 次主查询 + 2 次数据时效（orders / refunds 的 MAX）+ 3 次基准
+          # （本期标量、环比、同比）。基准部分的开销上限是 3，超过即说明
+          # 窗口或谓词改写出现了重复执行。
+          max_queries: 6
+
+      - id: base-m002
+        question: 本月各区域的成交总额
+        intent: >
+          FR-M-2 不完整周期：本月只到 13 日，环比必须给出值供标注，但
+          comparable 为 false 且 deviation 为空，结论侧拿不到可以写进
+          「较上月下降 X%」的数字。
+        expect:
+          status: ok
+          min_rows: 1
+          granularity: month
+          mom_present: true
+          mom_comparable: false
+          partial_period: true
+          note: 本期未完整，对比基准仅供参考
+          missing_contains: ["不参与结论生成"]
+
+      - id: base-m003
+        question: 上周各渠道的客单价
+        intent: >
+          FR-M-3 规则表：客单价在周粒度下噪声过大，规则表配了
+          min_granularity=month，因此整组基准不输出，并说明原因而不是留空。
+        expect:
+          status: ok
+          min_rows: 1
+          granularity: week
+          mom_present: false
+          yoy_present: false
+          note: 无对比期数据
+          missing_contains: ["粒度下限"]
+
+      - id: base-m004
+        question: 各渠道的订单量
+        intent: >
+          FR-M-1 缺失场景：问题不含时间词，语义层解析不出区间，此时没有
+          「对比期」可言，必须输出「无对比期数据」并说明原因。
+        expect:
+          status: ok
+          min_rows: 1
+          mom_present: false
+          yoy_present: false
+          note: 无对比期数据
+          missing_contains: ["未限定时间范围"]
+
+      - id: base-m005
+        question: 今年以来各区域的退款率
+        intent: >
+          年粒度 + 不完整周期 + 比率型指标三重叠加。年粒度的环比窗口与同比
+          窗口重合（都是上一年），这是年跨度的固有性质，不属于缺陷；本条
+          验证的是比率型指标按整体比率计算、以及不完整周期照样被隔离。
+        expect:
+          status: ok
+          min_rows: 1
+          granularity: year
+          mom_present: true
+          mom_comparable: false
+          partial_period: true
+          note: 本期未完整，对比基准仅供参考
+          missing_contains: ["不参与结论生成"]
+          max_queries: 6
+
+      - id: base-m006
+        question: 去年各区域的退款率
+        intent: >
+          对比期落在建库之前：2024 年没有数据，环比与同比都取不到值，
+          按「数据缺失」而不是 0 处理。
+        expect:
+          status: ok
+          min_rows: 1
+          mom_present: false
+          yoy_present: false
+          partial_period: false
+          note: 无对比期数据
+          missing_contains: ["环比期数据缺失"]
+
+  drilldown:
+    description: >-
+      下钻与异常标记（FR-L-1 至 FR-L-3）。分两段：先按 trigger 构造问句并
+      断言「只在上一轮槽位上加深一层」，再把问句丢回既有链路跑一遍，确认
+      拼出来的句子查得到东西。finding 触发点加深一层，cell 触发点只过滤。
+    scoring: 各条 expect 的断言全部成立即通过。
+    cases:
+      - id: drill-f001
+        trigger:
+          source: finding
+          metric: 成交总额
+          dimension: 大区
+          slice: 华东
+        intent: >-
+          FR-L-2 主路径：异常标记带 metric / dimension / slice 三个字段，
+          在「大区」上加深一层到「渠道」。gmv 的维度顺序写在 metrics.yaml，
+          下钻不能自己另排一份。
+        expect:
+          question: 华东的成交总额按下单渠道分布
+          next_dimension: channel
+          only_one_level: true
+          status: ok
+          min_rows: 1
+
+      - id: drill-f002
+        trigger:
+          source: finding
+          metric: 退款率
+          dimension: 大区
+          slice: 华中
+          time_label: 上个月
+        intent: >-
+          时间限定要一并继承。丢掉时间后问句会变成「全时段华中」，查出来的
+          数字与触发它的那一轮对不上。
+        expect:
+          question: 上个月华中的退款率按下单渠道分布
+          next_dimension: channel
+          only_one_level: true
+
+      - id: drill-c001
+        trigger:
+          source: cell
+          metric: 成交总额
+          dimension: 大区
+          slice: 华东
+        intent: >-
+          单元格触发点只做「同口径 + 维度值过滤」，不加深。点数字的目的是
+          验证它怎么来的，不是跳到另一个维度。
+        expect:
+          question: 华东的成交总额
+          next_dimension: null
+          status: ok
+          min_rows: 1
+
+      - id: drill-c002
+        trigger:
+          source: cell
+          metric: 退款率
+          dimension: 大区
+          slice: 华中
+          time_label: 今年以来
+        intent: 同 drill-c001，带时间限定的过滤型下钻
+        expect:
+          question: 今年以来华中的退款率
+          next_dimension: null
+
+      - id: drill-x001
+        trigger:
+          source: finding
+          metric: 退款率
+          dimension: 退款原因
+          slice: 质量问题
+        intent: >-
+          边界：refund_reason 是 refund_rate 声明的最后一个维度，已无可加深
+          的下一层。此时必须给出原因而不是拼一个跑不通的问句。
+        expect:
+          available: false
+          question: ""
+          next_dimension: null
+
+      - id: drill-l001
+        question: 各区域的成交总额
+        intent: >-
+          FR-L-1 端到端：七个大区的成交总额必然触发排名规则，findings 的
+          字段必须齐备，否则前端渲染不出可点击的标记。
+        expect:
+          status: ok
+          min_rows: 1
+          findings_min: 1
+          findings_rules: [rank]
+          findings_fields: [metric, dimension, slice, value, baseline, deviation, severity, reason]
+
+      - id: drill-l002
+        question: 今年以来各区域的退款率
+        intent: >-
+          不完整周期下偏离类异常不得出现（FR-M-2 的隔离在此收口）；本期
+          各区退款率均未越过 10% 的绝对阈值，因此只能由排名规则产出标记，
+          deviation 与 absolute 两条都不该命中。
+        expect:
+          status: ok
+          min_rows: 1
+          findings_rules: [rank]
+          findings_absent: [deviation, absolute]
+
+  robust:
+    description: >-
+      第 7 批健壮性核对（FR-B-3 / FR-D-5 / FR-I-3）。桩模式的结论文案不含
+      结果集外的数字，因此 number_checks 应为空——验证白名单零误报；时间区间
+      一致性与 datalineage 组交叉验证。脱敏的端到端用例依赖能查到 users 表
+      手机号 / 身份证列的问句，桩模板不覆盖该表，脱敏行为由单测
+      test_masking.py 直接对 mask_result 断言，不在本组重复。
+    scoring: 各条 expect 的断言全部成立即通过。
+    cases:
+      - id: robust-b001
+        question: 上个月各区域的成交总额
+        intent: >-
+          FR-B-3 白名单零误报：桩结论文案只有一句固定说明，不含任何数字，
+          number_checks 必须为空，不能把行内正常数据误报为「待查」。
+          同时 FR-D-5 期望 false（模板 SQL 缺时间谓词）。
+        expect:
+          status: ok
+          min_rows: 1
+          number_clean: true
+          time_range_consistent: false
+
+      - id: robust-b002
+        question: 各渠道的订单量
+        intent: >-
+          无时间问句：核对器返回 null，且结论数字核对同样零待查。
+        expect:
+          status: ok
+          min_rows: 1
+          number_clean: true
+          time_range_consistent: null
+
+  alert:
+    description: >-
+      异常订阅（FR-O-1 至 FR-O-5）。case.rule 给规则定义，runner 落规则后
+      用固定时刻求值两次：第一次验状态 / 命中，第二次验同周期幂等。
+      o001 命中、o002 未命中（status 仍为 ok）、o003 求值失败（status=error）
+      ——失败与未命中在记录里必须可区分。
+    scoring: 各条 expect 的断言全部成立即通过。
+    cases:
+      - id: alert-o001
+        question: 规则：各销售大区的退款率高于 0%
+        rule:
+          metric: refund_rate
+          dimensions: [region]
+          comparison: gt
+          threshold: 0
+          severity: attention
+        intent: >-
+          FR-O-2 命中路径：桩「退款」模板按大区分组算退款率，阈值 0 必然
+          至少有一个大区越线；hits 必须带切片、值与下钻问句。
+        expect:
+          eval_status: ok
+          hit: true
+          idempotent: true
+
+      - id: alert-o002
+        question: 规则：各销售大区的退款率高于 999999
+        rule:
+          metric: refund_rate
+          dimensions: [region]
+          comparison: gt
+          threshold: 999999
+          severity: notice
+        intent: >-
+          FR-O-5 未命中：查询成功但没有切片越线，记录必须是 status=ok +
+          hit=false，不能写成 error。
+        expect:
+          eval_status: ok
+          hit: false
+          idempotent: true
+
+      - id: alert-o003
+        question: 规则：成交总额偏离度超过 5%（整体、无时间限定）
+        rule:
+          metric: gmv
+          dimensions: []
+          comparison: deviation
+          threshold: 5
+          severity: attention
+        intent: >-
+          FR-O-5 失败路径：问句未限定时间范围，环比 / 同比基准不成立，
+          偏离度无法求值，必须记 status=error 而不是「未命中」。
+        expect:
+          eval_status: error
+          idempotent: true
+
+      - id: alert-o004
+        question: 规则：各销售大区的退款率低于 -999999（幂等复检）
+        rule:
+          metric: refund_rate
+          dimensions: [region]
+          comparison: lt
+          threshold: -999999
+          severity: notice
+        intent: >-
+          FR-O-3 幂等：同一 evaluated_at 第二次求值返回同一行 id，
+          UNIQUE(rule_id, evaluated_at) 兜底。
+        expect:
+          eval_status: ok
+          hit: false
+          idempotent: true
+
+  # ------------------------------------------------------------------
+  # FR-A-1 至 FR-A-5：多轮改条件/粒度、改写、排序与 TopN、数值过滤、槽位
+  # 桩模式下 _mock_route_decision 按关键词填充 slots，可断言槽位结构；
+  # 真实模型下由模型自行填充，切到 LLM_API_KEY 后自动生效。
+  # ------------------------------------------------------------------
+  multiturn:
+    description: >-
+      多轮改条件/粒度、改写、排序与 TopN、数值过滤、槽位结构化
+      （FR-A-1 至 FR-A-5）。桩模式下断言 slots 结构与 SQL 关键子串；
+      requires_llm=true 的条目标注依赖真实模型，桩模式下按 skipped 处理。
+    scoring: 各条 expect 的断言全部成立即通过。
+    cases:
+      # FR-A-3：排序与 TopN
+      - id: mt-a003-topn
+        question: 成交额前 5 的品类
+        intent: FR-A-3 TopN：桩模板产出 ORDER BY ... DESC LIMIT 5
+        expect:
+          status: ok
+          min_rows: 1
+          sql_contains: ["ORDER BY", "DESC", "LIMIT 5"]
+          top_n: 5
+
+      # FR-A-3：排名语义
+      - id: mt-a003-rank
+        question: 各区域成交额排名
+        intent: FR-A-3 排名：桩模板产出 RANK() OVER
+        expect:
+          status: ok
+          min_rows: 1
+          sql_contains: ["RANK()"]
+
+      # FR-A-4：数值过滤（大于）
+      - id: mt-a004-gt
+        question: 成交额大于一百万的区域
+        intent: FR-A-4 数值过滤：桩模板产出 HAVING ... >
+        expect:
+          status: ok
+          sql_contains: ["HAVING", ">"]
+
+      # FR-A-4：数值过滤（小于）
+      - id: mt-a004-lt
+        question: 成交额低于十万的区域
+        intent: FR-A-4 数值过滤：桩模板产出 HAVING ... <
+        expect:
+          status: ok
+          sql_contains: ["HAVING", "<"]
+
+      # FR-A-1/A-2：多轮改写（桩模式下 slots 与 rewritten_question 可观测）
+      - id: mt-a001-rewrite
+        question: 那上个月呢
+        intent: >-
+          FR-A-1/A-2 多轮改写：桩模式下 _mock_route_decision 命中「上个月呢」
+          关键词，rewritten_question 被填充（[桩改写] 前缀），slots.time_range
+          含「上个月」。
+        requires_llm: true
+        expect:
+          status: ok
+          slots_time_range: "上个月"
+
+      # FR-A-5：槽位结构化（桩模式下可断言）
+      - id: mt-a005-slots
+        question: 上个月华东区的成交总额
+        intent: >-
+          FR-A-5 槽位：桩模式下 slots 含 metrics=[成交总额]、dimensions=[区域]、
+          filters 含区域=华东、time_range=上个月。
+        expect:
+          status: ok
+          slots_metrics_any: ["成交总额"]
+          slots_dimensions_any: ["区域"]
+          slots_filters_any: [{"field": "区域", "value": "华东"}]
+          slots_time_range: "上个月"
+
+  # ------------------------------------------------------------------
+  # FR-J-1：窗口函数与 CTE 高级用例
+  # 标 requires_llm=true：桩模板不覆盖窗口函数与 CTE，需真实模型生成。
+  # ------------------------------------------------------------------
+  advanced:
+    description: >-
+      窗口函数与 CTE 高级用例（FR-J-1）。三条用例分别覆盖 row_number 排名、
+      lag 环比、WITH 分步聚合。桩模式不覆盖这些写法，标 requires_llm=true，
+      切到 LLM_API_KEY 后自动生效。
+    scoring: 各条 expect 的断言全部成立即通过。
+    cases:
+      - id: adv-j001-rownumber
+        question: 按成交额给各区域排名，并标出名次
+        intent: FR-J-1 row_number 排名
+        requires_llm: true
+        expect:
+          status: ok
+          min_rows: 1
+          sql_contains: ["ROW_NUMBER()"]
+
+      - id: adv-j002-lag
+        question: 各月成交总额的环比变化
+        intent: FR-J-1 lag 环比
+        requires_llm: true
+        expect:
+          status: ok
+          min_rows: 1
+          sql_contains: ["LAG("]
+
+      - id: adv-j003-cte
+        question: 先按品类算月成交，再取每个品类的 Top 3 月份
+        intent: FR-J-1 WITH 分步聚合
+        requires_llm: true
+        expect:
+          status: ok
+          min_rows: 1
+          sql_contains: ["WITH"]

@@ -20,6 +20,17 @@ logger = logging.getLogger(__name__)
 
 
 def build_checkpointer(settings: Settings | None = None) -> Any:
+    """构造记忆 saver。实际模式用 :func:`build_checkpointer_with_mode` 取。"""
+    saver, _mode = build_checkpointer_with_mode(settings)
+    return saver
+
+
+def build_checkpointer_with_mode(settings: Settings | None = None) -> tuple[Any, str]:
+    """返回 (saver, 实际生效模式)。
+
+    配置写 sqlite 但可选依赖缺失时会静默退回 memory——健康检查必须报告
+    实际模式而不是配置项，否则就是在报「健康」的同时悄悄降级（FR-J-3）。
+    """
     s = settings or get_settings()
     mode = (s.checkpointer or "memory").lower()
 
@@ -31,7 +42,7 @@ def build_checkpointer(settings: Settings | None = None) -> Any:
                 "未安装 langgraph-checkpoint-sqlite，会话将不会跨重启保留。"
                 "安装命令：pip install langgraph-checkpoint-sqlite"
             )
-            return MemorySaver()
+            return MemorySaver(), "memory"
 
         s.app_db_path.parent.mkdir(parents=True, exist_ok=True)
         # SqliteSaver 自带连接管理，from_conn_string 返回上下文管理器，
@@ -48,10 +59,10 @@ def build_checkpointer(settings: Settings | None = None) -> Any:
         saver = SqliteSaver(conn)
         saver.setup()
         logger.info("会话记忆使用 SQLiteSaver：%s", s.app_db_path)
-        return saver
+        return saver, "sqlite"
 
     logger.info("会话记忆使用 MemorySaver（进程重启后丢失）")
-    return MemorySaver()
+    return MemorySaver(), "memory"
 
 
 def thread_config(session_id: str) -> dict[str, Any]:

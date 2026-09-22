@@ -91,6 +91,114 @@ class TurnRecord:
     created_at: dt.datetime | None = None
     id: int = 0  # 0 表示尚未落库，add_turn 提交后回填自增主键
 
+    # —— FR-H-2 历史回看字段 ——
+    # 阶段时间线 JSON，stages 列表原样落库
+    stages_json: str | None = None
+    # 守卫改写前的原始 SQL
+    original_sql: str | None = None
+    # 本轮守卫告警 JSON 字符串
+    guard_warnings_json: str | None = None
+    # fix 节点递增次数；0 表示未修正
+    retry_count: int = 0
+    # 0/1：结果是否被行数上限截断
+    truncated: int = 0
+    # 实际落库的行数
+    persist_row_count: int = 0
+    # 实际执行 SQL 中出现的表名（去重后），JSON 字符串数组
+    source_tables_json: str | None = None
+    # 异常标记列表 JSON（FR-L-1，第 6 批事，本批允许 None）
+    findings_json: str | None = None
+    # 对比基准值 JSON（FR-M-1，第 4 批事，本批允许 None）
+    baselines_json: str | None = None
+    # 本轮走过的节点序列去重（FR-I-4 后续会用到）
+    node_path: str | None = None
+    # FR-A-5：结构化槽位 JSON（metrics/dimensions/filters/time_range/order_by/top_n）
+    slots_json: str | None = None
+    # FR-H-3：用户原话与改写后问句。二者不同时说明这一轮发生了指代消解
+    original_question: str | None = None
+    rewritten_question: str | None = None
+
+
+@dataclass
+class FeedbackRecord:
+    """一条点赞点踩（FR-G-1）。
+
+    rating 取 up/down；down 时 reason_code 与 note 才有意义。
+    turn_id 关联 turns 表，反馈只能针对已落库的轮次。
+    """
+
+    turn_id: int
+    session_id: str
+    rating: str  # up / down
+    reason_code: str = ""
+    note: str = ""
+    created_at: dt.datetime | None = None
+    updated_at: dt.datetime | None = None
+    id: int = 0
+
+
+@dataclass
+class ShareRecord:
+    """一条只读分享链接（FR-N-3）。
+
+    token 是访问凭据；snapshot_json 存完整结果快照，访问时直接读出。
+    expires_at 为 None 表示永久有效；revoked=1 后前端不再可读。
+    """
+
+    token: str
+    snapshot_json: str = "{}"
+    turn_id: int | None = None
+    session_id: str | None = None
+    expires_at: dt.datetime | None = None
+    revoked: int = 0
+    created_at: dt.datetime | None = None
+
+
+@dataclass
+class AlertRuleRecord:
+    """一条异常订阅规则（FR-O-1）。
+
+    dimensions 为维度名列表，空列表表示整体口径；comparison 取
+    gt / lt / deviation；severity 取 notice / attention。
+    id=0 表示尚未落库。
+    """
+
+    metric: str
+    comparison: str
+    threshold: float
+    dimensions: list[str] = field(default_factory=list)
+    severity: str = "notice"
+    enabled: bool = True
+    created_at: dt.datetime | None = None
+    updated_at: dt.datetime | None = None
+    id: int = 0
+
+
+@dataclass
+class AlertRecord:
+    """一次规则求值事件（FR-O-2 / FR-O-5）。
+
+    一个 (rule_id, evaluated_at) 唯一对应一行：命中多个切片时，hits 里
+    每个元素是 {"slice": {...}|None, "value": float, "baseline": {...}|None,
+    "reason": str}；未命中 hits 为空；失败时 status=error 且 reason 必填。
+    """
+
+    rule_id: int
+    evaluated_at: dt.datetime
+    status: str = "ok"  # ok / error
+    hit: bool = False
+    metric: str = ""
+    hits: list[dict[str, Any]] = field(default_factory=list)
+    reason: str = ""
+    seen: bool = False
+    created_at: dt.datetime | None = None
+    id: int = 0
+
+    @property
+    def value(self) -> float | None:
+        """首个命中值，供列表排序与角标展示。"""
+        return self.hits[0].get("value") if self.hits else None
+
 
 class SessionStore(ABC):
     """会话元数据接口。历史会话的增删查都在这里。"""
@@ -118,3 +226,67 @@ class SessionStore(ABC):
 
     @abstractmethod
     def list_turns(self, session_id: str) -> list[TurnRecord]: ...
+
+    # —— FR-G 反馈闭环（第 6 批） ——
+    @abstractmethod
+    def upsert_feedback(self, feedback: FeedbackRecord) -> int: ...
+    """提交点赞点踩。同一 turn_id 重复提交按更新处理（UNIQUE 约束保证）。"""
+
+    @abstractmethod
+    def get_feedback_by_turn(self, turn_id: int) -> FeedbackRecord | None: ...
+
+    @abstractmethod
+    def list_feedback(
+        self,
+        session_id: str | None = None,
+        rating: str | None = None,
+    ) -> list[FeedbackRecord]: ...
+    """按会话或评分筛选反馈列表，用于聚合统计与导出。"""
+
+    # —— FR-N-3 只读分享（第 6 批） ——
+    @abstractmethod
+    def create_share(self, share: ShareRecord) -> str: ...
+    """插入一条分享链接记录，返回 token（既是 PK 也是访问凭据）。"""
+
+    @abstractmethod
+    def get_share(self, token: str) -> ShareRecord | None: ...
+
+    # —— FR-O 异常订阅（第 7 批） ——
+    @abstractmethod
+    def list_alert_rules(self, enabled_only: bool = False) -> list[AlertRuleRecord]: ...
+
+    @abstractmethod
+    def get_alert_rule(self, rule_id: int) -> AlertRuleRecord | None: ...
+
+    @abstractmethod
+    def upsert_alert_rule(self, rule: AlertRuleRecord) -> AlertRuleRecord:
+        """新建（id=0）或按 id 更新规则。"""
+
+    @abstractmethod
+    def delete_alert_rule(self, rule_id: int) -> bool: ...
+
+    @abstractmethod
+    def insert_alert_evaluation(self, alert: AlertRecord) -> AlertRecord:
+        """幂等写入一次求值：(rule_id, evaluated_at) 已存在则原样返回旧记录。"""
+
+    @abstractmethod
+    def list_alerts(
+        self,
+        seen: bool | None = None,
+        rule_id: int | None = None,
+        limit: int = 100,
+    ) -> list[AlertRecord]: ...
+
+    @abstractmethod
+    def count_unseen_alerts(self) -> int: ...
+
+    @abstractmethod
+    def mark_alert_seen(self, alert_id: int) -> bool: ...
+
+    @abstractmethod
+    def latest_alert_eval(self) -> AlertRecord | None:
+        """最近一次求值（任意规则任意状态），从未求值返回 None。"""
+
+    @abstractmethod
+    def consecutive_alert_failures(self) -> int:
+        """从最近一次求值向前数连续 error 的次数（按求值时刻倒序）。"""

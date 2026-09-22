@@ -18,9 +18,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from app.api import chat, semantic, session
+from app.api import alerts, chat, drilldown, feedback, semantic, session, share, sql_explain
 from app.api.deps import get_container
+from app.agent.nodes._freshness import compute_data_freshness
 from app.config import get_settings
+from app.observability import counters
 from app.semantic.loader import SemanticError
 
 logger = logging.getLogger(__name__)
@@ -92,26 +94,52 @@ app.add_middleware(
 app.include_router(chat.router)
 app.include_router(session.router)
 app.include_router(semantic.router)
+app.include_router(drilldown.router)
+app.include_router(feedback.router)
+app.include_router(share.router)
+app.include_router(alerts.router)
+app.include_router(sql_explain.router)
 
 
 @app.get("/api/health", tags=["ops"])
 def health() -> dict[str, Any]:
-    """存活探针。同时报告当前是真实模型还是桩实现，便于部署后自查。"""
+    """存活探针与部署自查。
+
+    除模型 / 记忆模式外，报告数据截止日期（取订单、退款两表中较早者）与异常
+    订阅健康度（最近求值时刻、连续失败次数、未读数）——FR-O-3 的部署前提是
+    外部计划任务，忘配时订阅静默不工作，必须能在这里一眼看出来（FR-J-3）。
+    """
     container = get_container()
+    freshness = compute_data_freshness(container.repo)
+    cutoffs = [c for c in (freshness["orders_cutoff"], freshness["refunds_cutoff"]) if c]
+    latest = container.store.latest_alert_eval()
+    failures = container.store.consecutive_alert_failures()
+    threshold = container.settings.alert_consecutive_failures_threshold
     return {
         "status": "ok",
         "llm_mock": container.gateway.mock,
         "model": container.settings.llm_model,
-        "checkpointer": container.settings.checkpointer,
+        # 实际生效模式：配置 sqlite 但依赖缺失时会退回 memory
+        "checkpointer": container.checkpointer_mode,
         "metrics": len(container.catalog.metrics),
         "tables": len(container.catalog.tables),
+        "data_as_of": min(cutoffs) if cutoffs else None,
+        "data_freshness": freshness,
+        "alert_rules": len(container.store.list_alert_rules(enabled_only=True)),
+        "alert_last_eval_at": latest.evaluated_at if latest else None,
+        "alert_consecutive_failures": failures,
+        "alert_failures_threshold": threshold,
+        "alert_unhealthy": failures >= threshold and threshold > 0,
+        "alert_unread": container.store.count_unseen_alerts(),
     }
 
 
 @app.get("/api/stats", tags=["ops"])
 def stats() -> dict[str, Any]:
-    """本进程内的模型用量统计。用于演示时说明一次问答消耗了多少 token。"""
-    return get_container().gateway.totals()
+    """本进程内用量统计：LLM token / 估算成本 + 对比期额外 SQL 次数（FR-J-3）。"""
+    totals = get_container().gateway.totals()
+    totals["comparison_queries"] = counters().comparison_queries
+    return totals
 
 
 @app.exception_handler(SemanticError)

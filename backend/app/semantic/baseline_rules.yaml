@@ -1,0 +1,43 @@
+# 对比基准选取规则（FR-M-3）
+#
+# 规则表按指标名索引，未配置的指标取 default。写进配置而不是硬编码的原因是
+# 不同指标的合理基准粒度不同：同一句「上周」的环比，对订单量是有效信号，对
+# 客单价则主要是噪声——单笔金额波动远大于订单数波动，按周比会得出「客单价崩了」
+# 这种由样本量不足而非经营变化造成的结论。
+#
+# 字段说明：
+#   mom               是否计算环比（相邻等长周期）
+#   yoy               是否计算同比（去年同期）
+#   granularity       基准粒度。auto = 按时间窗口跨度推断（见 baselines._infer_granularity）
+#   min_granularity   粒度下限。推断出的粒度比它更细时不输出该基准，
+#                     并在 missing_reasons 中说明，而不是硬给一个噪声值
+#
+# 粒度由粗到细的序：year > month > week > day。
+
+default:
+  mom: true
+  yoy: true
+  granularity: auto
+  min_granularity: day
+
+metrics:
+  # 客单价：单笔金额受大额订单影响明显，日/周粒度的环比主要是噪声
+  aov:
+    mom: true
+    yoy: true
+    granularity: auto
+    min_granularity: month
+
+  # 退款率：退款是低频事件，日粒度的分母太小，波动不可解释
+  refund_rate:
+    mom: true
+    yoy: true
+    granularity: auto
+    min_granularity: week
+
+  # 毛利：与成本价挂钩，日粒度受单笔大额订单影响，周以下不输出
+  gross_profit:
+    mom: true
+    yoy: true
+    granularity: auto
+    min_granularity: week

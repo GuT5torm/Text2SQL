@@ -68,12 +68,18 @@ class AgentState(TypedDict, total=False):
     messages: Annotated[list, add_messages]
     session_id: str
     question: str  # 当前轮问题，可能是 rewrite 后的完整问法
-    original_question: str  # 用户原话，历史与日志用
+    original_question: str  # 用户原话，历史与日志用（FR-H-3：落库并回看）
+    # FR-H-3：路由改写后的问句。与 question 同值时说明本轮没发生改写
+    rewritten_question: str
 
     # —— 意图 ——
     intent: Literal["query", "chitchat", "clarify"] | None
     intent_reason: str
     clarify_question: str | None
+    # FR-A-5：结构化槽位 {指标, 维度, 过滤, 时间, 排序, TopN}。
+    # route 节点产出，供前端标注与评测断言。必须显式声明：LangGraph 只认
+    # TypedDict 里出现过的键，未声明的键由节点返回后会被归约器静默丢弃。
+    slots: dict[str, Any]
 
     # —— 语义召回 ——
     retrieved: RetrievedContext
@@ -101,6 +107,51 @@ class AgentState(TypedDict, total=False):
     metric_used: list[str]
     answer: str | None
 
+    # —— FR-C-1 写法说明 ——
+    # generate 节点给出的 SQL 写法依据，供 SqlPanel 折叠项（与 stage.detail 解耦）
+    sql_reasoning: str
+    # fix 节点给出的最后一次修正理由，与 sql_reasoning 并存便于回看
+    fix_reasoning: str
+    # —— FR-F-2 修正痕迹 ——
+    # {attempts, reason}，修正过的轮次随结论返回，供前端标注与断言
+    fix_note: dict[str, Any] | None
+
+    # —— FR-F-1 空结果回灌 ——
+    # 与 retry_count 分开计数：空结果与报错是两类失败，共享配额会让报错修正
+    # 少一次机会。上限取自配置，默认 1。
+    empty_retry: int
+    # 本轮执行成功但返回 0 行。为 True 时路由走 fix 的回灌分支
+    empty_result: bool
+    # fix 判定「确认无数据」后置位，此时不再回灌，按正常结论给出
+    no_data_confirmed: bool
+
+    # —— FR-D-1 来源表（实际执行 SQL 的 FROM/JOIN 解析）——
+    source_tables: list[str]
+
+    # —— FR-D-2 数据时效（库内 MAX + 配置兜底）——
+    data_freshness: dict[str, Any] | None
+
+    # —— FR-H-2 补全：执行后的实际行数，用于区分执行截断与回看不全 ——
+    persist_row_count: int
+
+    # —— FR-M-1 / FR-M-2 / FR-M-3 衍生字段 ——
+    # baselines 是嵌套 dict（包含 mom / yoy / partial_period / current_period）
+    # partial_period 与 granularity 提到顶层便于前端直接读，不必深挖 baselines
+    #
+    # 三者都必须显式声明：LangGraph 只认 TypedDict 里出现过的键，未声明的键
+    # 由节点返回后会被归约器静默丢弃，表现为「节点算出来了但终态里是空的」。
+    baselines: dict[str, Any] | None
+    partial_period: bool
+    granularity: str | None
+
+    # —— FR-L-1 异常判定 ——
+    findings: list[dict[str, Any]]
+
+    # —— FR-B-3 结论数字待查清单 / FR-D-5 时间区间一致性 ——
+    # 两者都是纯函数核对结果，未声明的键会被 LangGraph 静默丢弃。
+    number_checks: list[dict[str, Any]]
+    time_range_consistent: bool | None
+
     # —— 控制 ——
     status: Literal["ok", "clarify", "chitchat", "error"]
     error: str | None
@@ -117,7 +168,11 @@ def initial_state(session_id: str, question: str) -> AgentState:
         session_id=session_id,
         question=question,
         original_question=question,
+        rewritten_question=question,
         retry_count=0,
+        empty_retry=0,
+        empty_result=False,
+        no_data_confirmed=False,
         guard_warnings=[],
         fix_history=[],
         columns=[],

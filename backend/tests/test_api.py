@@ -155,3 +155,186 @@ def test_sse_stream_emits_stages_then_result(client: Any, require_mock: None) ->
     assert "result" in names
     assert names[-1] == "done"
     assert names.count("result") == 1
+
+
+# ---------------------------------------------------------------------------
+# FR-L-2 下钻接口
+# ---------------------------------------------------------------------------
+
+def test_drilldown_from_finding_deepens_one_level(client: Any) -> None:
+    body = client.post(
+        "/api/drilldown",
+        json={"source": "finding", "metric": "成交总额", "dimension": "大区",
+              "slice": "华东"},
+    ).json()
+    assert body["available"] is True
+    assert body["question"] == "华东的成交总额按下单渠道分布"
+    assert body["next_dimension"] == "channel"
+    assert body["slice"] == "华东"
+
+
+def test_drilldown_from_cell_only_filters(client: Any) -> None:
+    body = client.post(
+        "/api/drilldown",
+        json={"source": "cell", "metric": "退款率", "dimension": "大区",
+              "slice": "华中", "time_label": "上个月"},
+    ).json()
+    assert body["question"] == "上个月华中的退款率"
+    assert body["next_dimension"] is None
+
+
+def test_drilldown_reports_why_it_is_unavailable(client: Any) -> None:
+    body = client.post(
+        "/api/drilldown",
+        json={"source": "finding", "metric": "退款率", "dimension": "退款原因",
+              "slice": "质量问题"},
+    ).json()
+    assert body["available"] is False
+    assert body["question"] == ""
+    assert body["reason"]
+
+
+def test_drilldown_rejects_unknown_source(client: Any) -> None:
+    assert client.post(
+        "/api/drilldown", json={"source": "unknown", "metric": "成交总额"}
+    ).status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# 前端接入契约：对比基准与异常标记（第三批）
+# ---------------------------------------------------------------------------
+
+
+def test_sync_result_carries_baselines_and_findings(client: Any) -> None:
+    """前端的基准标签与异常列表直接读这两个字段，缺字段会静默降级成「没有」。"""
+    sid = _new_session(client)
+    body = client.post(
+        "/api/chat/sync", json={"session_id": sid, "question": "上个月各区域的成交总额"}
+    ).json()
+
+    assert body["status"] == "ok"
+    assert body["granularity"] == "month"
+    assert body["partial_period"] is False
+    baselines = body["baselines"]
+    assert baselines["metric"] == "成交总额"
+    assert baselines["current_value"] > 0
+    assert baselines["mom"]["comparable"] is True
+    assert baselines["mom"]["deviation"] is not None
+    assert body["findings"], "七个大区必然触发排名规则"
+
+
+def test_history_turn_keeps_baselines_and_findings(client: Any) -> None:
+    """历史回看没有 stages 可重建，基准与标记只能来自落库。"""
+    sid = _new_session(client)
+    client.post(
+        "/api/chat/sync", json={"session_id": sid, "question": "上个月各区域的成交总额"}
+    ).json()
+
+    turn = client.get(f"/api/session/{sid}").json()["turns"][0]
+    assert turn["baselines"]["metric"] == "成交总额"
+    assert len(turn["findings"]) > 0
+    # FR-M-2 历史回看：partial_period 与 granularity 应从 baselines_json 提取到顶层
+    assert turn["partial_period"] is False
+    assert turn["granularity"] == "month"
+
+
+def test_drilldown_question_is_runnable(client: Any) -> None:
+    """接口只拼问句，能否查到结果由链路决定。这一条把两者串起来验一次。"""
+    sid = _new_session(client)
+    first = client.post(
+        "/api/chat/sync", json={"session_id": sid, "question": "上个月各区域的成交总额"}
+    ).json()
+    finding = next(f for f in first["findings"] if f["dimension"] and f["slice"] is not None)
+
+    plan = client.post(
+        "/api/drilldown",
+        json={
+            "source": "finding",
+            "metric": finding["metric"],
+            "dimension": finding["dimension"],
+            "slice": str(finding["slice"]),
+            "time_label": first["time_range"]["label"],
+        },
+    ).json()
+
+    assert plan["available"] is True
+    assert finding["slice"] in plan["question"]
+
+    second = client.post(
+        "/api/chat/sync", json={"session_id": sid, "question": plan["question"]}
+    ).json()
+    assert second["status"] == "ok"
+    assert second["row_count"] > 0
+    # 下钻轮次与普通轮次一样要落库，历史回看里应当是两条
+    turns = client.get(f"/api/session/{sid}").json()["turns"]
+    assert len(turns) == 2
+
+
+# ---------------------------------------------------------------------------
+# 前端接入契约：对比基准与异常标记（第三批）
+# ---------------------------------------------------------------------------
+
+
+def test_sync_result_carries_baselines_and_findings(client: Any) -> None:
+    """前端的基准标签与异常列表直接读这两个字段，缺字段会静默降级成「没有」。"""
+    sid = _new_session(client)
+    body = client.post(
+        "/api/chat/sync", json={"session_id": sid, "question": "上个月各区域的成交总额"}
+    ).json()
+
+    assert body["status"] == "ok"
+    assert body["granularity"] == "month"
+    assert body["partial_period"] is False
+    baselines = body["baselines"]
+    assert baselines["metric"] == "成交总额"
+    assert baselines["current_value"] > 0
+    assert baselines["mom"]["comparable"] is True
+    assert baselines["mom"]["deviation"] is not None
+    assert body["findings"], "七个大区必然触发排名规则"
+
+
+def test_history_turn_keeps_baselines_and_findings(client: Any) -> None:
+    """历史回看没有 stages 可重建，基准与标记只能来自落库。"""
+    sid = _new_session(client)
+    client.post(
+        "/api/chat/sync", json={"session_id": sid, "question": "上个月各区域的成交总额"}
+    ).json()
+
+    turn = client.get(f"/api/session/{sid}").json()["turns"][0]
+    assert turn["baselines"]["metric"] == "成交总额"
+    assert len(turn["findings"]) > 0
+    # FR-M-2 历史回看：partial_period 与 granularity 应从 baselines_json 提取到顶层
+    assert turn["partial_period"] is False
+    assert turn["granularity"] == "month"
+
+
+def test_drilldown_question_is_runnable(client: Any) -> None:
+    """接口只拼问句，能否查到结果由链路决定。这一条把两者串起来验一次。"""
+    sid = _new_session(client)
+    first = client.post(
+        "/api/chat/sync", json={"session_id": sid, "question": "上个月各区域的成交总额"}
+    ).json()
+    finding = next(f for f in first["findings"] if f["dimension"] and f["slice"] is not None)
+
+    plan = client.post(
+        "/api/drilldown",
+        json={
+            "source": "finding",
+            "metric": finding["metric"],
+            "dimension": finding["dimension"],
+            "slice": str(finding["slice"]),
+            "time_label": first["time_range"]["label"],
+        },
+    ).json()
+
+    assert plan["available"] is True
+    assert finding["slice"] in plan["question"]
+
+    second = client.post(
+        "/api/chat/sync", json={"session_id": sid, "question": plan["question"]}
+    ).json()
+    assert second["status"] == "ok"
+    assert second["row_count"] > 0
+    # 下钻轮次与普通轮次一样要落库，历史回看里应当是两条
+    turns = client.get(f"/api/session/{sid}").json()["turns"]
+    assert len(turns) == 2

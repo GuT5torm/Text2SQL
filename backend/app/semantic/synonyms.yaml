@@ -133,6 +133,22 @@ value_synonyms:
     field: orders.status
     value: refunded
 
+  # —— 退款原因（FR-L-3）
+  # 与上面大区的登记同理：说出具体原因时，光给取值提示不足以让后续环节知道
+  # 该按 refunds.reason 分组，必须把 refund_reason 维度一并拉起来。
+  - term: 七天无理由
+    field: refunds.reason
+    value: 七天无理由
+  - term: 质量问题
+    field: refunds.reason
+    value: 质量问题
+  - term: 发错货
+    field: refunds.reason
+    value: 发错货
+  - term: 买家拒收
+    field: refunds.reason
+    value: 买家拒收
+
   # —— 会员等级
   - term: 白卡
     field: users.level

@@ -20,7 +20,9 @@ CREATE TABLE users (
     city          TEXT    NOT NULL,
     level         TEXT    NOT NULL,   -- 会员等级：normal / silver / gold / platinum
     channel       TEXT    NOT NULL,   -- 注册渠道：app / h5 / miniprogram / pc
-    register_date TEXT    NOT NULL    -- 注册日期 YYYY-MM-DD
+    register_date TEXT    NOT NULL,   -- 注册日期 YYYY-MM-DD
+    phone         TEXT,               -- 手机号（敏感字段，出参必须脱敏）
+    id_card       TEXT                -- 身份证号（敏感字段，出参必须脱敏）
 );
 
 -- 商品类目表，parent_id 为空表示一级类目

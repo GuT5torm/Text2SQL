@@ -72,6 +72,10 @@ def create_app_engine(path: Path | None = None) -> Engine:
         cur = dbapi_conn.cursor()
         cur.execute("PRAGMA journal_mode = WAL")
         cur.execute("PRAGMA synchronous = NORMAL")
+        # SQLite 默认不强制外键。模型里 alerts.rule_id 声明了 ON DELETE
+        # CASCADE，不开这个 PRAGMA 就是摆设：删规则后旧告警变孤儿，且规则
+        # 自增 id 复用时会被幂等查询误命中（FR-O-3）。
+        cur.execute("PRAGMA foreign_keys = ON")
         cur.close()
 
     return engine

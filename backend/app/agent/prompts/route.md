@@ -35,13 +35,32 @@
   "intent": "query",
   "rewritten_question": "上个月各区域的销售额",
   "clarify_question": null,
-  "reason": "在上一轮区域销售额基础上收窄了时间范围，主体明确"
+  "reason": "在上一轮区域销售额基础上收窄了时间范围，主体明确",
+  "slots": {
+    "metrics": ["成交总额"],
+    "dimensions": ["区域"],
+    "filters": [{"field": "区域", "value": "华东"}],
+    "time_range": "上个月",
+    "order_by": {"field": "成交总额", "direction": "desc"},
+    "top_n": 5
+  }
 }
 ```
 
 `intent` 为 `clarify` 时，`clarify_question` 必须给出一个具体的、用户可以直接回答的问题，
 并说明不同理解会导致什么差异。例如：
 「你说的用户数是注册用户还是发生过成交的用户？两者相差较大。」
+
+`slots` 把问题拆成六类槽位，供前端标注与评测断言：
+
+- `metrics`：指标名列表，取自语义层的指标显示名（如「成交总额」「退款率」）
+- `dimensions`：分组维度列表（如「区域」「品类」「渠道」）
+- `filters`：过滤条件列表，每项形如 `{"field": "区域", "value": "华东"}`
+- `time_range`：时间范围的文字描述（如「上个月」「近 30 天」），未提及时间留空字符串
+- `order_by`：排序要求，形如 `{"field": "成交总额", "direction": "desc"}`；未要求排序时留 null
+- `top_n`：TopN 限制，整数；未要求时留 null
+
+未识别的槽位留空数组、空字符串或 null，不要省略键名。
 
 ## 输入
 

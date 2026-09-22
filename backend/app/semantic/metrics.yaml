@@ -12,6 +12,12 @@
 #   expression     可直接嵌入 SELECT 的聚合表达式，已是最终口径
 #   tables         表达式依赖的表
 #   required_filters  必带的 WHERE 条件，缺失则口径不成立
+#   denominator    分母概念标签；声明同一分母的指标，其订单状态过滤必须一致。
+#                  当前口径：
+#                    paid_order   已成交订单量（排除 cancelled/pending）；gmv /
+#                                 sales_volume / order_count / aov / refund_rate /
+#                                 paying_users / gross_profit 均按此口径取分母。
+#                  加载期校验由 FR-M-5 强制，详见 app/semantic/loader.py。
 #   dimensions     该指标在业务上有意义的切片维度，召回时用于过滤无关维度
 #   caveats        口径边界说明，原样透传到前端与结论中
 #   unit           结果单位
@@ -26,6 +32,7 @@ metrics:
     required_filters:
       - "orders.status NOT IN ('cancelled', 'pending')"
       - "order_items.order_id = orders.id"
+    denominator: paid_order
     dimensions: [order_date, order_month, order_quarter, region, channel, category_name, brand, user_level]
     caveats: "不含已取消与未支付订单；不扣除退款，退款影响需另看 refund_rate。金额单位元。"
     unit: 元
@@ -64,6 +71,7 @@ metrics:
     required_filters:
       - "orders.status NOT IN ('cancelled', 'pending')"
       - "order_items.order_id = orders.id"
+    denominator: paid_order
     dimensions: [order_date, order_month, order_quarter, region, channel, category_name, brand]
     caveats: "默认口径为商品件数，不是订单数。若问「多少单」请改用 order_count。"
     unit: 件
@@ -88,6 +96,7 @@ metrics:
     tables: [orders]
     required_filters:
       - "orders.status NOT IN ('cancelled', 'pending')"
+    denominator: paid_order
     dimensions: [order_date, order_month, order_quarter, region, channel, user_level, city]
     caveats: "按订单去重计数。不 JOIN order_items，避免一单多商品导致重复计数。"
     unit: 单
@@ -110,6 +119,7 @@ metrics:
     required_filters:
       - "orders.status NOT IN ('cancelled', 'pending')"
       - "order_items.order_id = orders.id"
+    denominator: paid_order
     dimensions: [order_month, order_quarter, region, channel, user_level]
     caveats: "分母为订单数口径。若需按付费用户数口径，分母改为 COUNT(DISTINCT orders.user_id)。分子分母必须来自同一过滤范围。"
     unit: 元
@@ -134,8 +144,14 @@ metrics:
     tables: [refunds, orders]
     required_filters:
       - "refunds.order_id = orders.id"
-    dimensions: [order_month, region, channel, category_name]
-    caveats: "按订单数口径，非金额口径。分母为同期订单量，分子为同期发生退款的订单数。"
+      # 分母与 gmv 口径一致：排除 cancelled/pending，按同期已成交订单计算。
+      # 原口径缺这一条，同一份数据在不同指标上同时使用会算出不同退款率
+      # （4.96% vs 5.70%），FR-L-4 修正后该差消失，由 FR-M-5 校验强制一致。
+      - "orders.status NOT IN ('cancelled', 'pending')"
+    denominator: paid_order
+    # FR-L-3：补入 refund_reason，按退款原因下钻才有语义层依据
+    dimensions: [order_month, region, channel, category_name, refund_reason]
+    caveats: "按订单数口径，非金额口径。分母与 gmv 一致，按同期已成交订单量计算（排除 cancelled/pending）。分子为同一过滤范围内发生退款的订单数。按退款原因拆分时，一单多退的订单会在每个涉及的原因里各计一次，各原因之和可能大于整体退款率。"
     unit: 比例
     examples:
       - q: 今年以来各区域的退款率
@@ -144,7 +160,8 @@ metrics:
                  ROUND(COUNT(DISTINCT r.order_id) * 1.0 / COUNT(DISTINCT o.id), 4) AS 退款率
           FROM orders o
           LEFT JOIN refunds r ON r.order_id = o.id
-          WHERE o.created_at >= '2026-01-01'
+          WHERE o.status NOT IN ('cancelled', 'pending')
+            AND o.created_at >= '2026-01-01'
           GROUP BY o.region
           ORDER BY 退款率 DESC
           LIMIT 1000
@@ -156,6 +173,7 @@ metrics:
     tables: [orders]
     required_filters:
       - "orders.status NOT IN ('cancelled', 'pending')"
+    denominator: paid_order
     dimensions: [order_month, order_quarter, region, channel, user_level, city]
     caveats: "同一用户在统计区间内多次下单只计一次。"
     unit: 人
@@ -179,6 +197,7 @@ metrics:
       - "orders.status NOT IN ('cancelled', 'pending')"
       - "order_items.order_id = orders.id"
       - "products.id = order_items.product_id"
+    denominator: paid_order
     dimensions: [order_month, order_quarter, region, category_name, brand]
     caveats: "成本取 products.cost_price，为当前成本而非历史成本，跨期对比时需注意。不含履约与推广费用。"
     unit: 元

@@ -9,7 +9,14 @@ from __future__ import annotations
 
 import pytest
 
-from app.db.guard import GuardResult, SqlGuard, strip_sql_fence
+from app.db.guard import (
+    GuardResult,
+    SqlGuard,
+    make_notice,
+    notice_code,
+    rejected_notices_from_text,
+    strip_sql_fence,
+)
 
 
 def errors_of(result: GuardResult) -> str:
@@ -405,3 +412,77 @@ def test_guard_reports_tables_and_columns(guard: SqlGuard) -> None:
     result = guard.check("SELECT o.region FROM orders o LIMIT 5")
     assert result.tables == ["orders"]
     assert result.columns == ["orders.region"]
+
+
+# ---------------------------------------------------------------------------
+# FR-I-2：R1–R9 编号与 rejected / rewritten 双通道
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "sql,expected_code",
+    [
+        ("   ", "R1"),
+        ("SELECT FROM WHERE", "R1"),
+        ("SELECT id FROM orders LIMIT 5; DROP TABLE orders", "R1"),
+        ("UPDATE orders SET status = 'paid'", "R2"),
+        ("DROP TABLE orders", "R3"),
+        ("SELECT * FROM customer_info LIMIT 5", "R4"),
+        ("SELECT region_name FROM orders LIMIT 5", "R5"),
+        ("SELECT * FROM orders, users LIMIT 5", "R7"),
+        ("SELECT randomblob(100000000)", "R9"),
+    ],
+)
+def test_rejection_messages_carry_rule_code(
+    guard: SqlGuard, sql: str, expected_code: str
+) -> None:
+    """每条拒绝文案必须以对应规则编号开头，前端按编号而非中文文案分流。"""
+    result = guard.check(sql)
+    assert not result.ok
+    text = result.error_text()
+    codes = {part.strip()[:2] for part in text.split("；") if part.strip()}
+    assert expected_code in codes, f"{sql} 的文案缺少 {expected_code}：{text}"
+
+
+def test_r6_rewrite_warning_carries_code(guard: SqlGuard) -> None:
+    result = guard.check("SELECT id FROM orders")
+    assert result.ok and result.rewritten
+    assert any(notice_code(w) == "R6" for w in result.warnings)
+
+
+def test_notice_code_extracts_prefix_or_none() -> None:
+    assert notice_code("R3 语句中存在被禁止的节点：DELETE") == "R3"
+    assert notice_code("  R8 查询超时") == "R8"
+    assert notice_code("没有编号的执行层报错") is None
+
+
+def test_rejected_notices_split_by_semicolon() -> None:
+    text = "R1 只允许单条查询语句；SQLite: no such column: x"
+    notices = rejected_notices_from_text(text)
+    assert [n["kind"] for n in notices] == ["rejected", "rejected"]
+    assert notices[0]["code"] == "R1"
+    # 执行层原始错误没有编号，code 留空而不是编造一个
+    assert notices[1]["code"] == ""
+    assert rejected_notices_from_text("") == []
+    assert rejected_notices_from_text(None) == []
+
+
+def test_guard_result_notices_separate_channels(guard: SqlGuard) -> None:
+    rejected = guard.check("DROP TABLE orders")
+    rejected_notices = rejected.notices()
+    assert rejected_notices and all(n["kind"] == "rejected" for n in rejected_notices)
+    # DROP 同时触发 R2（非 SELECT）与 R3（危险节点），编号都要在
+    assert {"R2", "R3"} <= {n["code"] for n in rejected_notices}
+
+    rewritten = guard.check("SELECT id FROM orders")
+    rewritten_notices = rewritten.notices()
+    assert rewritten_notices and all(n["kind"] == "rewritten" for n in rewritten_notices)
+    assert rewritten_notices[0]["code"] == "R6"
+
+
+def test_make_notice_shape() -> None:
+    assert make_notice("rejected", "R2 只允许 SELECT 查询") == {
+        "kind": "rejected",
+        "code": "R2",
+        "message": "R2 只允许 SELECT 查询",
+    }

@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from functools import lru_cache
 from typing import Any
 
-from app.agent.checkpointer import build_checkpointer
+from app.agent.checkpointer import build_checkpointer_with_mode
 from app.agent.graph import build_graph
 from app.config import Settings, get_settings
 from app.db.engine import ensure_business_db
@@ -38,6 +38,8 @@ class Container:
     store: SessionStore
     graph: Any
     checkpointer: Any
+    # FR-J-3：checkpointer 实际生效模式（配置 sqlite 失败时会退回 memory）
+    checkpointer_mode: str = "memory"
 
 
 def build_container(settings: Settings | None = None) -> Container:
@@ -46,10 +48,10 @@ def build_container(settings: Settings | None = None) -> Container:
 
     catalog = load_catalog()
     gateway = Gateway(s)
-    guard = SqlGuard.from_catalog(catalog, max_rows=s.sql_max_rows)
+    guard = SqlGuard.from_catalog(catalog, max_rows=s.sql_max_rows, dialect=s.sql_dialect)
     repo = SqliteQueryRepository()
     store = SqliteSessionStore()
-    checkpointer = build_checkpointer(s)
+    checkpointer, checkpointer_mode = build_checkpointer_with_mode(s)
 
     graph = build_graph(
         gateway=gateway,
@@ -59,6 +61,8 @@ def build_container(settings: Settings | None = None) -> Container:
         checkpointer=checkpointer,
         history_window=s.history_window,
         max_retry=s.sql_max_retry,
+        # FR-F-1：空结果回灌配额，与报错修正是两套计数
+        max_empty=s.sql_max_empty_retry,
     )
     logger.info(
         "容器装配完成：指标 %d 个、表 %d 张、LLM %s",
@@ -75,6 +79,7 @@ def build_container(settings: Settings | None = None) -> Container:
         store=store,
         graph=graph,
         checkpointer=checkpointer,
+        checkpointer_mode=checkpointer_mode,
     )
 
 

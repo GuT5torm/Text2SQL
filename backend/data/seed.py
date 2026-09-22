@@ -96,6 +96,10 @@ def build_users(rng: random.Random) -> list[tuple]:
         # 注册日期落在业务起始日之前到当天之间，老用户占比更高
         offset = int(abs(rng.gauss(0, 1)) * 150)
         reg = START_DATE - dt.timedelta(days=offset)
+        # phone / id_card 由 uid 确定性派生，绝不取 rng：造数逻辑里固定种子
+        # 承载着评测基线，多取一次随机数会扰动后续所有分布。
+        phone = "139" + f"{uid:08d}"
+        id_card = f"310100{reg:%Y%m%d}{uid:03d}X"
         rows.append(
             (
                 uid,
@@ -104,6 +108,8 @@ def build_users(rng: random.Random) -> list[tuple]:
                 rng.choices(LEVELS, LEVEL_WEIGHTS)[0],
                 rng.choices(CHANNELS, CHANNEL_WEIGHTS)[0],
                 reg.isoformat(),
+                phone,
+                id_card,
             )
         )
     return rows
@@ -262,6 +268,10 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="生成 Text2SQL 样例电商库")
     parser.add_argument("--keep", action="store_true", help="库已存在时跳过，不覆盖")
     parser.add_argument("--db", default=str(DB_PATH), help="输出库路径")
+    parser.add_argument(
+        "--end-date",
+        help="数据截止日（YYYY-MM-DD），默认昨天；评测基线快照复现时显式指定",
+    )
     args = parser.parse_args()
 
     db_path = Path(args.db)
@@ -270,7 +280,10 @@ def main() -> None:
         return
 
     rng = random.Random(SEED)
-    end_date = dt.date.today() - dt.timedelta(days=1)
+    if args.end_date:
+        end_date = dt.date.fromisoformat(args.end_date)
+    else:
+        end_date = dt.date.today() - dt.timedelta(days=1)
 
     print(f"[1/5] 建表 {SCHEMA_PATH.name}")
     conn = sqlite3.connect(db_path)
@@ -278,7 +291,7 @@ def main() -> None:
 
     print(f"[2/5] 生成用户 {N_USERS} 条")
     users = build_users(rng)
-    conn.executemany("INSERT INTO users VALUES (?,?,?,?,?,?)", users)
+    conn.executemany("INSERT INTO users VALUES (?,?,?,?,?,?,?,?)", users)
 
     print("[3/5] 生成类目与商品")
     level1, level2 = build_categories()

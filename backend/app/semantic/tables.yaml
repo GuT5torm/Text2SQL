@@ -6,6 +6,10 @@
 # 字段说明：
 #   name / type / display   物理名、类型、中文显示名
 #   enum                    枚举值含义，帮助模型理解 status 这类编码字段
+#   definition              含 enum 的字段必须说明该枚举的划分依据（收货地址、
+#                           状态机、注册入口等），用于口径面板（FR-D-3）展示
+#                           与加载期一致性校验（FR-M-4）。不含 enum 的字段
+#                           可不写。
 #   note                    特殊约定，例如日期函数用法
 #
 # 维度单列在文件末尾的 dimensions 段。维度不是物理列（例如「月份」由
@@ -29,6 +33,7 @@ tables:
       - name: level
         type: TEXT
         display: 会员等级
+        definition: 按该用户历史累计实付订单金额（已排除 cancelled/pending）分层；分层阈值随业务调整，定义于会员运营规则口径。
         enum:
           normal: 普通会员
           silver: 银卡
@@ -37,6 +42,7 @@ tables:
       - name: channel
         type: TEXT
         display: 注册渠道
+        definition: 按用户完成注册时使用的入口划分，由前端埋点写入。
         enum:
           app: App
           h5: H5
@@ -46,6 +52,18 @@ tables:
         type: TEXT
         display: 注册日期
         note: 格式 YYYY-MM-DD
+      - name: phone
+        type: TEXT
+        display: 手机号
+        sensitive: true
+        mask: phone
+        note: 敏感字段，任何结果集出参一律按手机号规则脱敏（前 3 后 4）
+      - name: id_card
+        type: TEXT
+        display: 身份证号
+        sensitive: true
+        mask: idcard
+        note: 敏感字段，任何结果集出参一律按身份证规则脱敏（前 6 后 4）
 
   - name: categories
     display: 商品类目表
@@ -104,6 +122,7 @@ tables:
       - name: status
         type: TEXT
         display: 订单状态
+        definition: 订单状态机，由下单 → 支付 → 履约 → 完成 / 取消 / 退款 的单向转移构成；任一状态变更按业务规则触发，不存在逆向回退（除人工介入的退款特例）。
         enum:
           pending: 待支付
           paid: 已支付
@@ -115,6 +134,7 @@ tables:
       - name: region
         type: TEXT
         display: 销售大区
+        definition: 按订单收货地址所属大区划分（七大区口径），与用户注册地、下单主体所在地区无直接对应关系。
         enum:
           华东: 华东
           华南: 华南
@@ -126,6 +146,7 @@ tables:
       - name: channel
         type: TEXT
         display: 下单渠道
+        definition: 按用户在该订单中提交下单动作所经过的入口划分，与该用户的注册渠道可不同。
         enum:
           app: App
           h5: H5
@@ -184,6 +205,7 @@ tables:
       - name: reason
         type: TEXT
         display: 退款原因
+        definition: 按售后受理时由客服或自助售后系统归类的退款原因；同一订单发生多次退款时，每次退款独立归类，目前数据无重复。
         enum:
           七天无理由: 七天无理由
           质量问题: 质量问题
@@ -252,3 +274,26 @@ dimensions:
     synonyms: [城市, 各城市]
     expression: "users.city"
     tables: [users]
+
+  # FR-L-3：退款原因维度。refunds.reason 的四个枚举值早已登记在表里，但此前
+  # 没有对应维度，按原因分组做不了。
+  #
+  # FR-L-5 要求同时声明计数口径：refunds 的 grain 是「一行一次退款，同一订单
+  # 可能部分退款」，按原因分组后「按笔数」与「按订单数」是两套数，不能留给
+  # 生成环节自行选择。count_grain 声明默认口径，count_expressions 给出两种
+  # 口径可直接执行的表达式，都写在这里而不是散在 prompt 里。
+  - name: refund_reason
+    display: 退款原因
+    synonyms: [退款原因, 退货原因, 售后原因, 按原因, 各原因, 什么原因]
+    expression: "refunds.reason"
+    tables: [refunds]
+    join_note: 需 JOIN refunds ON refunds.order_id = orders.id
+    count_grain: refund_row
+    count_expressions:
+      refund_row: "COUNT(r.id)"
+      order: "COUNT(DISTINCT o.id)"
+    grain_note: >-
+      默认按退款笔数计（count_grain=refund_row），同一订单发生多次退款时每次
+      退款独立计入各自原因。按订单数计改用 count_expressions.order，此时一单
+      多退的订单在每个涉及的原因里各计一次，各原因的订单数之和会大于退款订单
+      总数。两种口径不可混用。
