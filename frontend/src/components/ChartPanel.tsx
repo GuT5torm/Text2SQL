@@ -1,11 +1,13 @@
 import { useEffect, useMemo, useRef } from 'react';
 import * as echarts from 'echarts';
-import { Alert, Card, Empty, Typography } from 'antd';
+import { Alert, Button, Card, Empty, Space, Typography } from 'antd';
 import type { ChartPayload } from '@/api/types';
+import { dataUrlToBlob, downloadBlob, localTimestamp, slugifyQuestion } from '@/lib/exporters';
 
 const { Text } = Typography;
 
 const CHART_HEIGHT = 320;
+const PNG_SCALE = 2; // FR-B-2：2x 设备像素比，避免下载后在小屏上糊
 
 /**
  * 渲染前的字段校验。后端已在 chart/builder.py 校验过一次，这里再兜一层：
@@ -41,9 +43,13 @@ interface Props {
   columns: string[];
   rows: Record<string, unknown>[];
   title?: string;
+  /** 导出时的文件名 slug，默认从外部传入的 title 推断 */
+  exportPrefix?: string;
+  /** FR-M-2：本期未完整时在图表上方标注，避免使用者拿不完整周期与完整周期并列比较 */
+  partialPeriod?: boolean;
 }
 
-export function ChartPanel({ chart, columns, rows, title }: Props) {
+export function ChartPanel({ chart, columns, rows, title, exportPrefix, partialPeriod }: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const instanceRef = useRef<echarts.ECharts | null>(null);
 
@@ -76,10 +82,44 @@ export function ChartPanel({ chart, columns, rows, title }: Props) {
     if (renderable && option) instanceRef.current?.setOption(option, true);
   }, [option, renderable]);
 
+  const handleExportPng = () => {
+    const instance = instanceRef.current;
+    if (!instance) return;
+    const dataUrl = instance.getDataURL({
+      type: 'png',
+      pixelRatio: PNG_SCALE,
+      backgroundColor: '#ffffff',
+    });
+    const blob = dataUrlToBlob(dataUrl);
+    const slug = exportPrefix ?? slugifyQuestion(heading);
+    downloadBlob(`${slug}_${localTimestamp()}.png`, blob);
+  };
+
   const warnings = chart?.warnings ?? [];
 
   return (
-    <Card size="small" title={heading} styles={{ body: { padding: 12 } }}>
+    <Card
+      size="small"
+      title={heading}
+      styles={{ body: { padding: 12 } }}
+      extra={
+        renderable ? (
+          <Button size="small" onClick={handleExportPng}>
+            导出 PNG
+          </Button>
+        ) : null
+      }
+    >
+      {partialPeriod && (
+        <Alert
+          type="warning"
+          showIcon
+          message="本期未完整"
+          description="当前周期尚未走完，图表中的数值不能直接与完整周期并列比较。"
+          style={{ marginBottom: 8 }}
+        />
+      )}
+
       {renderable ? (
         <div ref={containerRef} style={{ height: CHART_HEIGHT, width: '100%' }} />
       ) : !rows.length ? (
@@ -121,6 +161,13 @@ export function ChartPanel({ chart, columns, rows, title }: Props) {
         <Text type="secondary" style={{ fontSize: 12 }}>
           {chart.reason}
         </Text>
+      )}
+      {renderable && rows.length > 0 && (
+        <Space size={8} style={{ marginTop: 6 }}>
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            数据点 {rows.length} 个
+          </Text>
+        </Space>
       )}
     </Card>
   );

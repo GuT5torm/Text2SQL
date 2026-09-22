@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Button, Empty, Input, Space, Tag, Typography } from 'antd';
 import { SendOutlined } from '@ant-design/icons';
 import type { ChatTurn } from '@/hooks/useChatStream';
+import type { DrilldownRequest } from '@/api/types';
 import { AnswerCard } from './AnswerCard';
 
 const { Text } = Typography;
@@ -14,6 +15,10 @@ interface Props {
   /** 点击历史卡片切换右侧结果区展示的轮次 */
   onFocus?: (key: string) => void;
   focusedKey?: string | null;
+  /** 下钻入口（FR-L-2）。由页面把槽位换成问句后重新提交 */
+  onDrilldown?: (slots: DrilldownRequest) => void;
+  /** 当前会话 ID，透传给 AnswerCard 让其渲染 FeedbackBar / ExportMenu */
+  sessionId?: string;
 }
 
 const EXAMPLES = [
@@ -26,7 +31,16 @@ const EXAMPLES = [
  * 对话区。发送后禁用输入直到收到 result 或 error ——
  * 后端是单轮串行的，允许连续提交只会让两轮的进度事件混在一起。
  */
-export function ChatPanel({ turns, streaming, onSend, onAbort, onFocus, focusedKey }: Props) {
+export function ChatPanel({
+  turns,
+  streaming,
+  onSend,
+  onAbort,
+  onFocus,
+  focusedKey,
+  onDrilldown,
+  sessionId,
+}: Props) {
   const [draft, setDraft] = useState('');
   const bottomRef = useRef<HTMLDivElement | null>(null);
 
@@ -90,6 +104,8 @@ export function ChatPanel({ turns, streaming, onSend, onAbort, onFocus, focusedK
               focused={turn.key === focusedKey}
               onFocus={onFocus ? () => onFocus(turn.key) : undefined}
               onRetry={streaming ? undefined : () => onSend(turn.question)}
+              onDrilldown={onDrilldown}
+              sessionId={sessionId}
             />
           </div>
         ))}

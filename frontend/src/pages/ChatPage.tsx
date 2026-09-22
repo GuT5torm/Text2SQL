@@ -6,8 +6,9 @@ import { ChatPanel } from '@/components/ChatPanel';
 import { ResultPane } from '@/components/ResultPane';
 import { SplitPane } from '@/components/SplitPane';
 import { useChatStream } from '@/hooks/useChatStream';
+import { requestDrilldown } from '@/api/drilldown';
 import { createSession, getSession, renameSession } from '@/api/session';
-import type { SessionItem } from '@/api/types';
+import type { DrilldownRequest, SessionItem } from '@/api/types';
 
 const { Text } = Typography;
 
@@ -29,6 +30,8 @@ export function ChatPage() {
   const { turns, streaming, send, abort, reset, loadHistory } = useChatStream();
   const lastKey = turns.length ? turns[turns.length - 1].key : null;
   const loadedRef = useRef<string | null>(null);
+  // FR-O-4：告警中心一键下钻带 ?q= 跳来，同一会话同一问句只自动发送一次
+  const consumedQuestionRef = useRef<string | null>(null);
 
   // 没有 session 参数时先建一个，避免用户第一句话发出去才发现无处可发
   useEffect(() => {
@@ -36,7 +39,11 @@ export function ChatPage() {
     let cancelled = false;
     createSession()
       .then((rec) => {
-        if (!cancelled) setParams({ session: rec.id }, { replace: true });
+        if (cancelled) return;
+        // 保留 ?q=：新建会话 replace 掉查询串会把告警下钻问句一起抹掉
+        const next = new URLSearchParams(params);
+        next.set('session', rec.id);
+        setParams(next, { replace: true });
       })
       .catch((error: unknown) => {
         if (!cancelled) setLoadError(error instanceof Error ? error.message : String(error));
@@ -44,7 +51,7 @@ export function ChatPage() {
     return () => {
       cancelled = true;
     };
-  }, [sessionId, setParams]);
+  }, [sessionId, setParams, params]);
 
   useEffect(() => {
     if (!sessionId || loadedRef.current === sessionId) return;
@@ -87,6 +94,45 @@ export function ChatPage() {
     },
     [sessionId, send],
   );
+
+  /**
+   * 下钻（FR-L-2）：先把槽位换成问句，再走正常的提问流程。
+   *
+   * 不直接把问句拼在前端——下一层维度取自语义层配置，前端拼出来的问句可能与
+   * 链路能查到的维度对不上。接口不可用时给出原因而不是静默失败：点了一个按钮
+   * 却什么都没发生，比弹一句「无法下钻」更难排查。
+   */
+  const handleDrilldown = useCallback(
+    async (slots: DrilldownRequest) => {
+      try {
+        const plan = await requestDrilldown(slots);
+        if (!plan.available) {
+          void message.info(plan.reason || '这一层已无法继续下钻');
+          return;
+        }
+        handleSend(plan.question);
+      } catch (error: unknown) {
+        void message.error(error instanceof Error ? error.message : String(error));
+      }
+    },
+    [handleSend],
+  );
+
+  // FR-O-4：告警中心「去对话里下钻」带 ?q= 跳转。会话就绪后自动发一次，
+  // 然后把 q 从地址栏清掉，避免刷新 / 回退时重复发问。
+  const pendingQuestion = params.get('q');
+  useEffect(() => {
+    if (!sessionId || !pendingQuestion) return;
+    const token = `${sessionId}|${pendingQuestion}`;
+    if (consumedQuestionRef.current === token) return;
+    consumedQuestionRef.current = token;
+    handleSend(pendingQuestion);
+    const next = new URLSearchParams(params);
+    next.delete('q');
+    setParams(next, { replace: true });
+    // handleSend 已覆盖依赖语义，params 只用于消费后清参
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionId, pendingQuestion]);
 
   const handleNew = useCallback(() => {
     createSession()
@@ -180,9 +226,11 @@ export function ChatPage() {
               onAbort={abort}
               onFocus={setFocusKey}
               focusedKey={focusKey}
+              onDrilldown={handleDrilldown}
+              sessionId={sessionId ?? undefined}
             />
           }
-          right={<ResultPane turn={focused} />}
+          right={<ResultPane turn={focused} onDrilldown={handleDrilldown} />}
         />
       </div>
     </div>

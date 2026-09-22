@@ -1,13 +1,20 @@
-import { Alert, Button, Card, Skeleton, Space, Typography } from 'antd';
+import { Alert, Button, Card, Collapse, Skeleton, Space, Tag, Tooltip, Typography } from 'antd';
 import type { ChatTurn } from '@/hooks/useChatStream';
+import type { DrilldownRequest, Finding } from '@/api/types';
+import { localTimestamp } from '@/lib/exporters';
+import { TERMINAL_COPY, normalizeGuardNotices } from '@/lib/streamState';
 import { AnswerText } from './AnswerText';
 import { ChartPanel } from './ChartPanel';
+import { DefinitionPanel } from './DefinitionPanel';
+import { ExportMenu } from './ExportMenu';
+import { FeedbackBar } from './FeedbackBar';
+import { FindingList } from './FindingList';
 import { MetricBadge } from './MetricBadge';
 import { ResultTable } from './ResultTable';
-import { SqlPanel } from './SqlPanel';
 import { StageIndicator } from './StageIndicator';
+import { TechDetails } from './TechDetails';
 
-const { Text } = Typography;
+const { Text, Paragraph } = Typography;
 
 interface Props {
   turn: ChatTurn;
@@ -20,6 +27,16 @@ interface Props {
   onFocus?: () => void;
   /** 失败态的重试入口。由对话区把这一轮的问题重新提交 */
   onRetry?: () => void;
+  /**
+   * 下钻入口（FR-L-2）。由页面把槽位换成问句后重新提交，
+   * 不传则本卡片不出现下钻按钮——历史回看没有可提交的会话。
+   */
+  onDrilldown?: (slots: DrilldownRequest) => void;
+  /**
+   * 当前会话 ID。FeedbackBar 与 ExportMenu 据此调用 feedback / share 接口。
+   * 历史回看与对话流都应传入；不传时不渲染这两块。
+   */
+  sessionId?: string;
 }
 
 /**
@@ -27,24 +44,38 @@ interface Props {
  * ok 走完整链路，chitchat 只给文本，clarify 给出补充信息的引导，
  * error 必须带上最后一次语句与报错 —— 失败不能是一片空白。
  */
-export function AnswerCard({ turn, compact = false, focused = false, onFocus, onRetry }: Props) {
+export function AnswerCard({
+  turn,
+  compact = false,
+  focused = false,
+  onFocus,
+  onRetry,
+  onDrilldown,
+  sessionId,
+}: Props) {
   const { result, stages, streaming, errorMessage } = turn;
 
   if (errorMessage) {
+    // FR-E-3：aborted / empty / network 三态。aborted 是用户主动行为，
+    // 用中性提示且不给重试；empty / network 才是故障，配色与重试入口不同。
+    const kind = turn.errorKind ?? 'network';
+    const copy = TERMINAL_COPY[kind];
     return (
       <Card size="small" style={{ borderRadius: 8 }}>
         <StageIndicator stages={stages} running={false} />
         <Alert
-          type="error"
+          type={copy.alertType}
           showIcon
-          message="请求失败"
-          description={errorMessage}
+          message={copy.title}
+          // network 态优先展示底层错误文案（含状态码 / detail），
+          // 其余两态用固定说明，避免把「已中断」误描述成故障。
+          description={kind === 'network' ? errorMessage : copy.description}
           action={
-            onRetry && (
+            copy.retryable && onRetry ? (
               <Button size="small" onClick={onRetry}>
                 重试
               </Button>
-            )
+            ) : undefined
           }
           style={{ marginTop: 8 }}
         />
@@ -53,8 +84,6 @@ export function AnswerCard({ turn, compact = false, focused = false, onFocus, on
   }
 
   if (!result) {
-    // 流已结束却什么都没收到。此时不能继续挂骨架屏：它会一直转下去，
-    // 既没有报错也没有重试入口，而输入框是可用的，问题很容易被忽略
     const stalled = !streaming;
     return (
       <Card size="small" style={{ borderRadius: 8 }}>
@@ -83,6 +112,41 @@ export function AnswerCard({ turn, compact = false, focused = false, onFocus, on
 
   const isQuery = result.status === 'ok' || (result.status === 'error' && Boolean(result.sql));
   const hasRows = result.rows.length > 0;
+  const isOffline = (result.metric_used ?? []).length === 0 && result.intent === 'query';
+
+  // 复制结论用的文本：附来源标识与时间戳，避免脱离上下文后不可读（FR-B-4）
+  const buildCopyText = () => {
+    const lines: string[] = [];
+    if (result.answer) lines.push(result.answer);
+    if (result.time_range?.resolved) lines.push(`时间范围：${result.time_range.resolved}`);
+    if (result.metric_used?.length) lines.push(`口径：${result.metric_used.join('、')}`);
+    if (result.caveats?.length) {
+      lines.push('边界：');
+      for (const c of result.caveats) lines.push(`- ${c}`);
+    }
+    lines.push(`来源：Text2SQL 生成于 ${localTimestamp()}`);
+    return lines.join('\n');
+  };
+
+  // 下钻的主指标：基准里带的那个优先于召回列表的第一个——基准只有一个主指标，
+  // 而 metric_used 可能召回多个（「成交总额与订单量」）。时间限定沿用本轮说法，
+  // 丢掉时间会让下钻问句查出的数字与触发它的这一轮对不上。
+  const drillMetric = result.baselines?.metric ?? result.metric_used?.[0] ?? null;
+  const drillTime = result.time_range?.label ?? null;
+
+  const handleFindingDrill = (finding: Finding) => {
+    onDrilldown?.({
+      source: 'finding',
+      metric: finding.metric || drillMetric,
+      dimension: finding.dimension,
+      slice: finding.slice === null || finding.slice === undefined ? null : String(finding.slice),
+      time_label: drillTime,
+    });
+  };
+
+  const handleCellDrill = ({ dimension, value }: { dimension: string; value: string }) => {
+    onDrilldown?.({ source: 'cell', metric: drillMetric, dimension, slice: value, time_label: drillTime });
+  };
 
   return (
     <Card
@@ -96,23 +160,7 @@ export function AnswerCard({ turn, compact = false, focused = false, onFocus, on
     >
       <StageIndicator stages={stages} running={streaming} />
 
-      {result.guard_warnings.length > 0 && (
-        <div style={{ marginTop: 8 }}>
-          {result.guard_warnings.map((w) => (
-            <Alert
-              key={w}
-              type="warning"
-              showIcon
-              message="SQL 被安全沙箱拦截"
-              description={w}
-              style={{ marginBottom: 6 }}
-            />
-          ))}
-        </div>
-      )}
-
       {result.status === 'clarify' && (
-        // 反问用中性灰，与「拦截」的黄、「失败」的红区分开：它只是信息不足，不是出错
         <div
           style={{
             marginTop: 8,
@@ -149,10 +197,71 @@ export function AnswerCard({ turn, compact = false, focused = false, onFocus, on
         />
       )}
 
+      {isOffline && result.status === 'ok' && (
+        // FR-D-4：未命中口径的显式提示。chitchat / clarify 命中口径为空是正常的，
+        // 只有问 query 类型却召回不到任何已登记指标时才提示「未命中口径」。
+        <Alert
+          type="warning"
+          showIcon
+          message="本次未命中已登记指标"
+          description="系统未在语义层找到与本问题匹配的指标定义，结论与数字仅来自生成式总结，请谨慎采纳。"
+          style={{ marginTop: 8 }}
+        />
+      )}
+
       {result.answer && (
         <div style={{ marginTop: 10 }}>
-          <AnswerText text={result.answer} />
+          <Space style={{ marginBottom: 4 }} size={6}>
+            <Text type="secondary" style={{ fontSize: 12 }}>结论</Text>
+            {result.masked && (
+              <Tooltip
+                title={
+                  result.masked_fields?.length
+                    ? `已对敏感字段脱敏：${result.masked_fields.join('、')}`
+                    : '结果中的敏感字段已脱敏'
+                }
+              >
+                <Tag color="purple" style={{ borderRadius: 4, marginInlineEnd: 0 }}>
+                  已脱敏
+                </Tag>
+              </Tooltip>
+            )}
+            <Tooltip title="复制结论文本（含口径与生成时间）">
+              <Button
+                size="small"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  navigator.clipboard?.writeText(buildCopyText());
+                }}
+              >
+                复制结论
+              </Button>
+            </Tooltip>
+          </Space>
+          <Paragraph style={{ margin: 0 }}>
+            <AnswerText text={result.answer} />
+          </Paragraph>
         </div>
+      )}
+
+      {isQuery && (result.number_checks?.length ?? 0) > 0 && (
+        // FR-B-3：结论里有数字无法从结果集回溯。中性提示，不改动结论本身——
+        // 核对器只负责指出，删改结论会让「模型说了什么」与「界面显示什么」脱节。
+        <Alert
+          type="info"
+          showIcon
+          style={{ marginTop: 8 }}
+          message="以下数字未能从结果集回溯，请人工核对"
+          description={
+            <Space size={[6, 6]} wrap>
+              {result.number_checks?.map((item) => (
+                <Tag key={item.text} color="default" style={{ borderRadius: 4 }}>
+                  {item.text}
+                </Tag>
+              ))}
+            </Space>
+          }
+        />
       )}
 
       {!result.answer && result.insight && <AnswerText text={result.insight} />}
@@ -165,12 +274,54 @@ export function AnswerCard({ turn, compact = false, focused = false, onFocus, on
         </ul>
       )}
 
-      {isQuery && (
+      {/* FR-D-2：数据截至要常驻，因此即使本轮未命中已登记指标也渲染这一行 */}
+      {isQuery && (result.metric_used.length > 0 || result.baselines || result.data_freshness) && (
         <div style={{ marginTop: 10 }}>
           <MetricBadge
             metricUsed={result.metric_used}
             caveats={result.caveats}
             timeRange={result.time_range}
+            baselines={result.baselines}
+            partialPeriod={result.partial_period}
+            timeRangeConsistent={result.time_range_consistent}
+            dataFreshness={result.data_freshness}
+          />
+        </div>
+      )}
+
+      {isQuery && result.findings.length > 0 && (
+        <div style={{ marginTop: 8 }}>
+          <FindingList
+            findings={result.findings}
+            onDrilldown={onDrilldown ? handleFindingDrill : undefined}
+          />
+        </div>
+      )}
+
+      {isQuery && result.metric_used.length > 0 && (
+        // FR-D-3：口径定义面板。折叠默认收起，避免每轮都拉两份接口。
+        <div style={{ marginTop: 8 }}>
+          <Collapse
+            size="small"
+            items={[
+              {
+                key: 'def',
+                label: (
+                  <span>
+                    口径定义
+                    <Text type="secondary" style={{ fontSize: 12, marginLeft: 6 }}>
+                      {result.metric_used.length} 项指标 · {result.source_tables?.length ?? 0} 张来源表
+                    </Text>
+                  </span>
+                ),
+                children: (
+                  <DefinitionPanel
+                    metricNames={result.metric_used}
+                    sourceTables={result.source_tables ?? []}
+                  />
+                ),
+              },
+            ]}
           />
         </div>
       )}
@@ -182,39 +333,72 @@ export function AnswerCard({ turn, compact = false, focused = false, onFocus, on
             columns={result.columns}
             rows={result.rows}
             title={turn.question.slice(0, 40)}
+            exportPrefix={turn.question.slice(0, 20)}
+            partialPeriod={result.partial_period}
           />
         </div>
       )}
 
-      {/* error 终态不再挂 SqlPanel：give_up 节点的回答里已经原样带了最后一次语句与报错，
-          同一个卡片里出现两份会造成视觉重复 */}
-      {result.sql && !compact && result.status !== 'error' && (
+      {isQuery && (
+        // FR-P-3：研发信息统一收敛在一处，不与业务信息混在卡片主区。
         <div style={{ marginTop: 10 }}>
-          <SqlPanel
-            sql={result.sql}
-            originalSql={result.original_sql}
-            error={result.sql_error}
-            retryCount={result.retry_count}
+          <Collapse
+            size="small"
+            items={[
+              {
+                key: 'tech',
+                label: '技术细节',
+                children: (
+                  <TechDetails
+                    stages={stages}
+                    sql={result.sql ?? ''}
+                    originalSql={result.original_sql ?? ''}
+                    sqlError={result.sql_error ?? ''}
+                    guardWarnings={result.guard_warnings ?? []}
+                    guardNotices={normalizeGuardNotices(result.guard_notices)}
+                    retryCount={result.retry_count}
+                    sessionId={sessionId}
+                    question={turn.question}
+                    sqlReasoning={result.sql_reasoning}
+                    fixReasoning={result.fix_reasoning}
+                    slots={result.slots ?? null}
+                    originalQuestion={turn.originalQuestion ?? turn.question}
+                    rewrittenQuestion={turn.rewrittenQuestion ?? result.rewritten_question ?? ''}
+                  />
+                ),
+              },
+            ]}
           />
         </div>
       )}
 
       {hasRows && !compact && (
         <div style={{ marginTop: 10 }}>
-          <Space size={8} style={{ marginBottom: 6 }}>
-            <Text type="secondary" style={{ fontSize: 12 }}>
-              共 {result.row_count} 行
+          <ResultTable
+            columns={result.columns}
+            rows={result.rows}
+            exportPrefix={turn.question.slice(0, 20)}
+            onCellDrill={onDrilldown ? handleCellDrill : undefined}
+            truncated={result.truncated}
+            totalRowCount={result.row_count}
+          />
+          {result.truncated && (
+            <Text type="warning" style={{ display: 'block', fontSize: 12, marginTop: 6 }}>
+              结果已被行数上限截断
             </Text>
-            {result.truncated && (
-              <Text type="warning" style={{ fontSize: 12 }}>
-                结果已被行数上限截断
-              </Text>
-            )}
-            <Text type="secondary" style={{ fontSize: 12 }}>
-              查询耗时 {result.query_elapsed_ms.toFixed(0)} ms
-            </Text>
+          )}
+        </div>
+      )}
+
+      {/* FR-G-1 反馈闭环与 FR-N-1/3 导出分享。
+          已落库（turn.turnId 非空）且 sessionId 已知时才显示；
+          streaming 中或落库失败的轮次不渲染，避免后端 404。 */}
+      {sessionId && turn.turnId && result.status !== 'error' && (
+        <div className="t2sql-no-print" style={{ marginTop: 8 }}>
+          <Space style={{ justifyContent: 'space-between', width: '100%' }}>
+            <FeedbackBar turnId={turn.turnId} sessionId={sessionId} />
+            <ExportMenu turn={turn} sessionId={sessionId} />
           </Space>
-          <ResultTable columns={result.columns} rows={result.rows} />
         </div>
       )}
     </Card>

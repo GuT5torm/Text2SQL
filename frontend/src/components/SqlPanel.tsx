@@ -1,4 +1,8 @@
-import { Button, Collapse, Space, Typography } from 'antd';
+import { useState } from 'react';
+import { Alert, Button, Collapse, List, Skeleton, Space, Typography } from 'antd';
+import { apiSend } from '@/api/client';
+import type { SqlExplainResponse, SqlExplainSegment } from '@/api/types';
+import { downloadText, localTimestamp, slugifyQuestion } from '@/lib/exporters';
 
 const { Paragraph, Text } = Typography;
 
@@ -9,6 +13,16 @@ interface Props {
   originalSql?: string;
   error?: string;
   retryCount?: number;
+  /** 文件名命名用的问句简写。默认从 sql 第一行提取 */
+  exportPrefix?: string;
+  /** 会话ID，传给 SQL 解释接口用于日志关联 */
+  sessionId?: string;
+  /** 用户原始问题，传给 SQL 解释接口 */
+  question?: string;
+  /** FR-C-1：generate 节点给出的写法依据 */
+  sqlReasoning?: string;
+  /** FR-C-1：fix 节点最后一次修正的理由。无修正时为空 */
+  fixReasoning?: string;
 }
 
 function SqlBlock({ code }: { code: string }) {
@@ -34,14 +48,123 @@ function SqlBlock({ code }: { code: string }) {
 /**
  * SQL 折叠面板。默认折叠：绝大多数用户关心的是数字与结论，
  * 语句留作核对入口，展开即可见，不占用首屏。
+ *
+ * FR-C-2：提供「解释」按钮，按需调用 /api/sql/explain 获取分段说明。
  */
-export function SqlPanel({ sql, originalSql, error, retryCount }: Props) {
+export function SqlPanel({
+  sql,
+  originalSql,
+  error,
+  retryCount,
+  exportPrefix,
+  sessionId,
+  question,
+  sqlReasoning,
+  fixReasoning,
+}: Props) {
+  const [explainSegments, setExplainSegments] = useState<SqlExplainSegment[] | null>(null);
+  const [explainLoading, setExplainLoading] = useState(false);
+  const [explainError, setExplainError] = useState<string | null>(null);
+
   if (!sql && !originalSql && !error) return null;
 
   const rewritten = Boolean(originalSql && sql && originalSql.trim() !== sql.trim());
   const items = [];
 
+  const handleDownload = (content: string) => {
+    const filename = `${exportPrefix ?? slugifyQuestion(content)}_${localTimestamp()}.sql`;
+    downloadText(filename, content + '\n', 'application/sql;charset=utf-8');
+  };
+
+  const handleExplain = async () => {
+    if (!sql) return;
+    setExplainLoading(true);
+    setExplainError(null);
+    try {
+      const resp = await apiSend<SqlExplainResponse>('POST', '/api/sql/explain', {
+        sql,
+        question: question ?? '',
+        session_id: sessionId ?? '',
+      });
+      if (resp.error) {
+        setExplainError(resp.error);
+      } else {
+        setExplainSegments(resp.segments);
+      }
+    } catch (err) {
+      setExplainError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setExplainLoading(false);
+    }
+  };
+
   if (sql) {
+    const extraChildren = (
+      <Space direction="vertical" size={8} style={{ width: '100%' }}>
+        <SqlBlock code={sql} />
+        <Space>
+          <Button
+            size="small"
+            onClick={() => navigator.clipboard?.writeText(sql)}
+          >
+            复制
+          </Button>
+          <Button size="small" onClick={() => handleDownload(sql)}>
+            下载 .sql
+          </Button>
+          {/* FR-C-2：按需 SQL 解释 */}
+          <Button
+            size="small"
+            loading={explainLoading}
+            onClick={handleExplain}
+          >
+            解释
+          </Button>
+        </Space>
+        {explainError && (
+          <Alert
+            type="error"
+            message="SQL 解释失败"
+            description={explainError}
+            showIcon
+            style={{ margin: 0 }}
+          />
+        )}
+        {explainLoading && <Skeleton active paragraph={{ rows: 2 }} />}
+        {explainSegments && explainSegments.length > 0 && (
+          <Collapse
+            size="small"
+            defaultActiveKey={['explain']}
+            items={[
+              {
+                key: 'explain',
+                label: (
+                  <Space size={8}>
+                    <span>SQL 解释</span>
+                    <Text type="secondary" style={{ fontSize: 12 }}>
+                      （FR-C-2 纯结构化解析）
+                    </Text>
+                  </Space>
+                ),
+                children: (
+                  <List
+                    size="small"
+                    dataSource={explainSegments}
+                    renderItem={(seg: SqlExplainSegment) => (
+                      <List.Item>
+                        <Text style={{ fontSize: 13 }}>
+                          {seg.index}. {seg.text}
+                        </Text>
+                      </List.Item>
+                    )}
+                  />
+                ),
+              },
+            ]}
+          />
+        )}
+      </Space>
+    );
     items.push({
       key: 'executed',
       label: (
@@ -55,16 +178,45 @@ export function SqlPanel({ sql, originalSql, error, retryCount }: Props) {
           ) : null}
         </Space>
       ),
+      children: extraChildren,
+    });
+  }
+
+  // FR-C-1：写法说明落位到 SQL 面板。此前 sql_reasoning 只存在于返回体与前端
+  // 类型声明里，没有任何渲染路径接住它，等于没交付。历史回看与桩模式下该字段
+  // 可能为空，此时整项不渲染，不占版面。
+  if (sqlReasoning || fixReasoning) {
+    items.push({
+      key: 'reasoning',
+      label: (
+        <Space size={8}>
+          <span>写法说明</span>
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            （模型给出的写法依据）
+          </Text>
+        </Space>
+      ),
       children: (
         <Space direction="vertical" size={8} style={{ width: '100%' }}>
-          <SqlBlock code={sql} />
-          <Button
-            size="small"
-            onClick={() => navigator.clipboard?.writeText(sql)}
-            style={{ alignSelf: 'flex-start' }}
-          >
-            复制
-          </Button>
+          {sqlReasoning ? (
+            <Paragraph style={{ fontSize: 13, margin: 0, whiteSpace: 'pre-wrap' }}>
+              {sqlReasoning}
+            </Paragraph>
+          ) : (
+            <Text type="secondary" style={{ fontSize: 12 }}>
+              本轮未返回写法依据。
+            </Text>
+          )}
+          {fixReasoning ? (
+            <>
+              <Text strong style={{ fontSize: 12 }}>
+                最后一次修正的理由
+              </Text>
+              <Paragraph style={{ fontSize: 13, margin: 0, whiteSpace: 'pre-wrap' }}>
+                {fixReasoning}
+              </Paragraph>
+            </>
+          ) : null}
         </Space>
       ),
     });
