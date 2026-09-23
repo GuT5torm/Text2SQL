@@ -9,7 +9,7 @@ import { SharePage } from '@/pages/SharePage';
 import { SessionSidebar } from '@/components/SessionSidebar';
 import { SettingsModal } from '@/components/SettingsModal';
 import { DataSourceModal } from '@/components/DataSourceModal';
-import { createSession, fetchHealth } from '@/api/session';
+import { fetchHealth } from '@/api/session';
 import type { DatasourceConnectResult } from '@/api/datasource';
 import type { HealthInfo } from '@/api/types';
 
@@ -60,6 +60,9 @@ function Shell() {
   const [collapsed, setCollapsed] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [datasourceOpen, setDatasourceOpen] = useState(false);
+  // 会话列表刷新信号：一轮问答落库后 bump，让侧边栏重拉（标题 / 轮次才定下来）
+  const [sessionsVersion, setSessionsVersion] = useState(0);
+  const bumpSessions = useCallback(() => setSessionsVersion((v) => v + 1), []);
   const navigate = useNavigate();
   const [params] = useSearchParams();
   const sessionId = params.get('session');
@@ -78,11 +81,10 @@ function Shell() {
     return () => window.clearInterval(timer);
   }, []);
 
-  // 新建对话：建好会话后直接导航过去，由 ChatPage 加载空历史。
+  // 新建对话：只导航到不带会话参数的路由，由 ChatPage 清空对话区；会话在
+  // 发出第一句提问时才惰性创建，避免每次点击都在库里留下一条空会话。
   const handleNew = useCallback(() => {
-    createSession()
-      .then((rec) => navigate(`/?session=${encodeURIComponent(rec.id)}`))
-      .catch(() => undefined);
+    navigate('/');
   }, [navigate]);
 
   // 设置保存后刷新健康状态，让顶栏模式标识立即更新
@@ -110,6 +112,7 @@ function Shell() {
         onOpenDatasource={() => setDatasourceOpen(true)}
         onOpenSettings={() => setSettingsOpen(true)}
         alertUnread={health?.alert_unread ?? 0}
+        refreshToken={sessionsVersion}
       />
       <Layout style={{ flex: 1, minWidth: 0, background: 'var(--wb-bg)' }}>
         <Header
@@ -172,7 +175,7 @@ function Shell() {
         </Header>
         <Content style={{ padding: 16, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
           <Routes>
-            <Route path="/" element={<ChatPage />} />
+            <Route path="/" element={<ChatPage onTurnComplete={bumpSessions} />} />
             <Route path="/history" element={<HistoryPage />} />
             <Route path="/alerts" element={<AlertCenter />} />
             <Route path="/share/:token" element={<SharePage />} />

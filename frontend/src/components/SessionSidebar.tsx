@@ -70,6 +70,11 @@ interface Props {
   onOpenSettings: () => void;
   /** 告警订阅未读数，用于底部导航角标 */
   alertUnread: number;
+  /**
+   * 外部刷新信号。值变化即重拉列表——一轮问答落库后，会话标题与轮次才定下来
+   * （后端在首轮落库时把默认标题改成问句），由上层 bump 一次让侧边栏同步。
+   */
+  refreshToken?: number;
 }
 
 /**
@@ -89,6 +94,7 @@ export function SessionSidebar({
   onOpenDatasource,
   onOpenSettings,
   alertUnread,
+  refreshToken = 0,
 }: Props) {
   const navigate = useNavigate();
   const [items, setItems] = useState<SessionItem[]>([]);
@@ -111,9 +117,12 @@ export function SessionSidebar({
     }
   }, [keyword]);
 
+  // 列表在挂载、关键字变化、当前会话切换、以及外部刷新信号变化时重拉。
+  // activeId：会话改为惰性创建，首次提问后地址栏才出现 session 参数，需补拉一次；
+  // refreshToken：一轮问答落库后标题与轮次才定下来，需再补拉一次。
   useEffect(() => {
     void reload();
-  }, [reload]);
+  }, [reload, activeId, refreshToken]);
 
   const now = useMemo(() => new Date(), [items]);
   // 分组顺序固定为 今天 / 昨天 / 7 天内 / 30 天内 / 更早，空组不渲染。
@@ -356,7 +365,7 @@ export function SessionSidebar({
       <div style={{ flex: 1, overflowY: 'auto', padding: '4px 8px 8px', minHeight: 0 }}>
         {groups.length === 0 && !loading && (
           <Text type="secondary" style={{ display: 'block', padding: '16px 4px', fontSize: 12 }}>
-            还没有会话，点上方「新建对话」开始
+            还没有会话，提问后会自动出现在这里
           </Text>
         )}
         {groups.map((group) => (
