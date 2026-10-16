@@ -1,0 +1,72 @@
+<Slide style={{ background: '#FFFFFF', padding: 0, flexDirection: 'column' }}>
+    {/* A3 页眉 */}
+    <Box style={{
+        width: '100%', height: 72, background: '#0E3F8C',
+        flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+        padding: '0 40px',
+    }}>
+        <Box style={{ flexDirection: 'row', alignItems: 'center', gap: 14 }}>
+            <Box style={{ width: 5, height: 26, background: '#3D7BD9' }} />
+            <Text style={{ fontSize: 32, fontWeight: 'bold', color: '#FFFFFF', fontFamily: '微软雅黑' }}>
+                结论里的数字是从哪来的
+            </Text>
+        </Box>
+        <Text style={{ fontSize: 15, color: 'rgba(255,255,255,0.7)', fontFamily: '微软雅黑' }}>
+            可信性设计
+        </Text>
+    </Box>
+
+    <Box style={{ flex: 1, flexDirection: 'column', padding: '20px 40px 0 40px', gap: 14 }}>
+        <Box style={{ flexDirection: 'row', gap: 22, alignItems: 'flex-start' }}>
+            {/* 左图 */}
+            <Box style={{ width: 656, flexDirection: 'column', gap: 8 }}>
+                <Image
+                    src='assets/03_followup_check.png'
+                    style={{ width: 656, height: 410, objectFit: 'cover', border: { width: 1, color: '#D6DCE5' } }}
+                />
+                <Text style={{ fontSize: 14, color: '#8B97A8', fontFamily: '微软雅黑' }}>
+                    真实运行截图：多轮追问「那上个月呢」。浅蓝提示条由结论一致性校验器挂出。
+                </Text>
+            </Box>
+
+            {/* 右文 */}
+            <Box style={{ flex: 1, flexDirection: 'column', gap: 14 }}>
+                <Box style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+                    <Box style={{ width: 4, height: 24, background: '#1E4FA8' }} />
+                    <Text style={{ fontSize: 25, fontWeight: 'bold', color: '#0E3F8C', fontFamily: '微软雅黑' }}>
+                        结论写完，还要回头对一遍
+                    </Text>
+                </Box>
+
+                <Text style={{ fontSize: 20, color: '#1A2230', lineHeight: 1.7, fontFamily: '微软雅黑' }}>
+                    模型输出结论后，系统会抽取结论中出现的全部数字，逐个回本轮结果集比对。没有找到来源的数字单独列出，提示人工核对。
+                </Text>
+
+                <Text style={{ fontSize: 20, color: '#1A2230', lineHeight: 1.7, fontFamily: '微软雅黑' }}>
+                    截图里的 169 是两个渠道订单量的差值，由模型自行算出。它不在结果集中——差值本身可以验证，但它不是查询返回的数据点。若不标注，读的人无从分辨哪些数是查出来的、哪些是推出来的。
+                </Text>
+
+                <Box style={{ background: '#E8EFF8', padding: '12px 16px', flexDirection: 'column', gap: 3 }}>
+                    <Text style={{ fontSize: 18, fontWeight: 'bold', color: '#0E3F8C', fontFamily: '微软雅黑' }}>标注的作用不是暴露缺陷</Text>
+                    <Text style={{ fontSize: 18, color: '#4A5568', fontFamily: '微软雅黑', lineHeight: 1.55 }}>
+                        而是划出边界：能追溯到结果集的正常给出，追溯不到的不静默略过。
+                    </Text>
+                </Box>
+            </Box>
+        </Box>
+
+        {/* 结论条 */}
+        <Box style={{ width: '100%', height: 66, background: '#0E3F8C', flexDirection: 'row', alignItems: 'center', padding: '0 22px', gap: 16 }}>
+            <Text style={{ fontSize: 20, fontWeight: 'bold', color: '#FFFFFF', fontFamily: '微软雅黑' }}>同一层还有两个机制</Text>
+            <Text style={{ fontSize: 18, color: 'rgba(255,255,255,0.85)', fontFamily: '微软雅黑' }}>
+                数据时效探针标注「数据截至哪天」　·　围绕中位水平的异常标记逐条给出值、基准与偏离度
+            </Text>
+        </Box>
+    </Box>
+
+    {/* D 页脚 */}
+    <Box style={{ width: '100%', height: 40, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', padding: '0 40px' }}>
+        <Text style={{ fontSize: 14, color: '#8B97A8', fontFamily: '微软雅黑' }}>Text2SQL 电商数据分析 Agent</Text>
+        <Text style={{ fontSize: 15, color: '#1E4FA8', fontFamily: 'Times New Roman' }}>11 / 16</Text>
+    </Box>
+</Slide>

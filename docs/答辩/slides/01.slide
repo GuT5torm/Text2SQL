@@ -1,0 +1,62 @@
+<Slide style={{ background: '#FFFFFF', padding: 0, flexDirection: 'column' }}>
+    {/* 深蓝顶条 A1 */}
+    <Box style={{
+        width: '100%', height: 96, background: '#0E3F8C',
+        flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+        padding: '0 48px',
+    }}>
+        <Text style={{ fontSize: 16, color: 'rgba(255,255,255,0.82)', fontFamily: '微软雅黑', letterSpacing: 1 }}>
+            
+        </Text>
+        <Text style={{ fontSize: 16, color: 'rgba(255,255,255,0.82)', fontFamily: '微软雅黑', letterSpacing: 1 }}>
+            
+        </Text>
+    </Box>
+
+    {/* 主标题区 */}
+    <Box style={{
+        flex: 1, flexDirection: 'column', justifyContent: 'center',
+        padding: '0 96px', gap: 22,
+    }}>
+        <Box style={{ width: 72, height: 5, background: '#1E4FA8' }} />
+        <Text style={{ fontSize: 60, fontWeight: 'bold', color: '#0E3F8C', lineHeight: 1.18, fontFamily: '微软雅黑' }}>
+            基于 Text2SQL 的<br />电商数据分析 Agent
+        </Text>
+        <Text style={{ fontSize: 48, color: '#3D7BD9', lineHeight: 1.15, fontFamily: 'Times New Roman' }}>
+            A Trustworthy Text-to-SQL Analytics Agent
+        </Text>
+        <Box style={{ width: 1080, height: 1, background: '#D6DCE5', marginTop: 6 }} />
+        <Text style={{ fontSize: 26, color: '#4A5568', fontFamily: '微软雅黑', letterSpacing: 2 }}>
+            口径集中配置 · 执行前校验 · 结果可追溯
+        </Text>
+    </Box>
+
+    {/* 底部信息条 */}
+    <Box style={{
+        width: '100%', height: 104, background: '#F0F5FC',
+        border: { top: { width: 1, color: '#D6DCE5' } },
+        flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+        padding: '0 96px',
+    }}>
+        <Box style={{ flexDirection: 'column', gap: 4 }}>
+            <Text style={{ fontSize: 14, color: '#8B97A8', fontFamily: '微软雅黑' }}>答辩人</Text>
+            <Text style={{ fontSize: 20, fontWeight: 'bold', color: '#1A2230', fontFamily: '微软雅黑' }}>李金盛</Text>
+        </Box>
+        <Box style={{ flexDirection: 'column', gap: 4 }}>
+            <Text style={{ fontSize: 14, color: '#8B97A8', fontFamily: '微软雅黑' }}>学号</Text>
+            <Text style={{ fontSize: 20, color: '#1A2230', fontFamily: '微软雅黑' }}>2021000000</Text>
+        </Box>
+        <Box style={{ flexDirection: 'column', gap: 4 }}>
+            <Text style={{ fontSize: 14, color: '#8B97A8', fontFamily: '微软雅黑' }}>专业</Text>
+            <Text style={{ fontSize: 20, color: '#1A2230', fontFamily: '微软雅黑' }}>计算机科学与技术</Text>
+        </Box>
+        <Box style={{ flexDirection: 'column', gap: 4 }}>
+            <Text style={{ fontSize: 14, color: '#8B97A8', fontFamily: '微软雅黑' }}>指导老师</Text>
+            <Text style={{ fontSize: 20, color: '#1A2230', fontFamily: '微软雅黑' }}>待填写</Text>
+        </Box>
+        <Box style={{ flexDirection: 'column', gap: 4 }}>
+            <Text style={{ fontSize: 14, color: '#8B97A8', fontFamily: '微软雅黑' }}>答辩日期</Text>
+            <Text style={{ fontSize: 20, color: '#1A2230', fontFamily: '微软雅黑' }}>2026年9月29日</Text>
+        </Box>
+    </Box>
+</Slide>

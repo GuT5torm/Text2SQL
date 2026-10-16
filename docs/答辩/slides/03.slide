@@ -1,0 +1,49 @@
+<Slide style={{ background: '#FFFFFF', padding: 0, flexDirection: 'column' }}>
+    {/* A3 页眉 */}
+    <Box style={{
+        width: '100%', height: 72, background: '#0E3F8C',
+        flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+        padding: '0 40px',
+    }}>
+        <Box style={{ flexDirection: 'row', alignItems: 'center', gap: 14 }}>
+            <Box style={{ width: 5, height: 26, background: '#3D7BD9' }} />
+            <Text style={{ fontSize: 32, fontWeight: 'bold', color: '#FFFFFF', fontFamily: '微软雅黑' }}>
+                业务要一个数，要等多久
+            </Text>
+        </Box>
+        <Text style={{ fontSize: 15, color: 'rgba(255,255,255,0.7)', fontFamily: '微软雅黑' }}>
+            选题背景
+        </Text>
+    </Box>
+
+    {/* C 内容区 */}
+    <Box style={{ flex: 1, flexDirection: 'column', padding: '36px 40px 0 40px', gap: 22 }}>
+        <Text style={{ fontSize: 22, color: '#1A2230', lineHeight: 1.8, fontFamily: '微软雅黑', textAlign: 'justify' }}>
+            在电商团队里，一个简单的问题往往要走完一条漫长的链路：业务提需求，分析师对口径，写 SQL 到数仓取数，导出表格，再做成图表回复。慢的不是某一环，而是每一环都在重复消耗同一件事——口径。
+            <br /><br />
+            同一句「上个月卖得怎么样」，运营说的是成交额，仓储说的是发货件数，财务说的是剔除退款后的净额。三人各写一遍 SQL，各得一组数字，彼此不知道另外两组的存在。
+            <br /><br />
+            让机器接管这条链路，困难不在写不出 SQL，而在它可能算错了量却仍返回一个正常的数字。问毛利它算成交额，问客单价它算成交额，不分组的问题它凭空补一个时间列。这类语句能通过语法检查、能执行、有数据，全程不报错。
+        </Text>
+
+        {/* 底部强调句 */}
+        <Box style={{
+            width: '100%', height: 78, background: '#E8EFF8',
+            border: { left: { width: 5, color: '#1E4FA8' } },
+            flexDirection: 'row', alignItems: 'center', padding: '0 28px',
+        }}>
+            <Text style={{ fontSize: 23, color: '#0E3F8C', fontWeight: 'bold', fontFamily: '微软雅黑', lineHeight: 1.5 }}>
+                本项目要解决的不是「能不能出数」，而是「出的数凭什么可信」。
+            </Text>
+        </Box>
+    </Box>
+
+    {/* D 页脚 */}
+    <Box style={{
+        width: '100%', height: 40, flexDirection: 'row',
+        alignItems: 'center', justifyContent: 'space-between', padding: '0 40px',
+    }}>
+        <Text style={{ fontSize: 14, color: '#8B97A8', fontFamily: '微软雅黑' }}>Text2SQL 电商数据分析 Agent</Text>
+        <Text style={{ fontSize: 15, color: '#1E4FA8', fontFamily: 'Times New Roman' }}>03 / 16</Text>
+    </Box>
+</Slide>

@@ -1,0 +1,138 @@
+<Slide style={{ background: '#FFFFFF', padding: 0, flexDirection: 'column' }}>
+    {/* A3 页眉 */}
+    <Box style={{
+        width: '100%', height: 72, background: '#0E3F8C',
+        flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+        padding: '0 40px',
+    }}>
+        <Box style={{ flexDirection: 'row', alignItems: 'center', gap: 14 }}>
+            <Box style={{ width: 5, height: 26, background: '#3D7BD9' }} />
+            <Text style={{ fontSize: 32, fontWeight: 'bold', color: '#FFFFFF', fontFamily: '微软雅黑' }}>
+                口径写在配置里，不在模型的猜测里
+            </Text>
+        </Box>
+        <Text style={{ fontSize: 15, color: 'rgba(255,255,255,0.7)', fontFamily: '微软雅黑' }}>
+            系统设计
+        </Text>
+    </Box>
+
+    <Box style={{ flex: 1, flexDirection: 'column', padding: '22px 40px 0 40px', gap: 16 }}>
+        <Text style={{ fontSize: 21, color: '#4A5568', fontFamily: '微软雅黑' }}>
+            同一个业务词在不同人口中指向不同的 SQL。把口径从对话里搬到配置文件，是结果可复现、可审计的前提。
+        </Text>
+
+        <Box style={{ flexDirection: 'row', gap: 16, alignItems: 'stretch' }}>
+            {/* 左卡 */}
+            <Box style={{
+                flex: 1, background: '#F7F9FC', border: { width: 1, color: '#D6DCE5' },
+                flexDirection: 'column', padding: 20, gap: 14,
+            }}>
+                <Box style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+                    <Box style={{ width: 4, height: 22, background: '#8B97A8' }} />
+                    <Text style={{ fontSize: 25, fontWeight: 'bold', color: '#4A5568', fontFamily: '微软雅黑' }}>
+                        一句话，三种理解
+                    </Text>
+                </Box>
+
+                <Box style={{ background: '#FFFFFF', padding: '10px 14px', border: { left: { width: 3, color: '#8B97A8' } } }}>
+                    <Text style={{ fontSize: 19, color: '#1A2230', fontFamily: '微软雅黑' }}>「上个月卖得怎么样」</Text>
+                </Box>
+
+                <Box style={{ flexDirection: 'column', gap: 12 }}>
+                    <Box style={{ flexDirection: 'column', gap: 3 }}>
+                        <Text style={{ fontSize: 18, fontWeight: 'bold', color: '#4A5568', fontFamily: '微软雅黑' }}>运营听到的「卖」</Text>
+                        <Text style={{ fontSize: 19, color: '#1A2230', fontFamily: '微软雅黑' }}>
+                            成交额　SUM(oi.quantity * oi.unit_price)
+                        </Text>
+                    </Box>
+                    <Box style={{ flexDirection: 'column', gap: 3 }}>
+                        <Text style={{ fontSize: 18, fontWeight: 'bold', color: '#4A5568', fontFamily: '微软雅黑' }}>仓储听到的「卖」</Text>
+                        <Text style={{ fontSize: 19, color: '#1A2230', fontFamily: '微软雅黑' }}>
+                            销量　　SUM(oi.quantity)
+                        </Text>
+                    </Box>
+                    <Box style={{ flexDirection: 'column', gap: 3 }}>
+                        <Text style={{ fontSize: 18, fontWeight: 'bold', color: '#4A5568', fontFamily: '微软雅黑' }}>财务听到的「卖」</Text>
+                        <Text style={{ fontSize: 19, color: '#1A2230', fontFamily: '微软雅黑' }}>
+                            净额　　还要先定义退款是减金额还是减订单
+                        </Text>
+                    </Box>
+                </Box>
+
+                <Text style={{ fontSize: 17, color: '#8B97A8', fontFamily: '微软雅黑', lineHeight: 1.6 }}>
+                    三种理解都说得通。区别不在于谁对，而在于系统必须选一种并说清楚选的是哪种。
+                </Text>
+            </Box>
+
+            {/* 中间箭头 */}
+            <Box style={{ width: 44, alignItems: 'center', justifyContent: 'center' }}>
+                <Text style={{ fontSize: 34, color: '#1E4FA8', fontFamily: 'Times New Roman' }}>›</Text>
+            </Box>
+
+            {/* 右卡 */}
+            <Box style={{
+                flex: 1, background: '#E8EFF8', border: { width: 1, color: '#1E4FA8' },
+                flexDirection: 'column', padding: 20, gap: 12,
+            }}>
+                <Box style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+                    <Box style={{ width: 4, height: 22, background: '#1E4FA8' }} />
+                    <Text style={{ fontSize: 25, fontWeight: 'bold', color: '#0E3F8C', fontFamily: '微软雅黑' }}>
+                        一份配置，一个口径
+                    </Text>
+                </Box>
+
+                <Text style={{ fontSize: 17, color: '#4A5568', fontFamily: '微软雅黑' }}>
+                    metrics.yaml　gmv · 成交总额
+                </Text>
+
+                <Box style={{ flexDirection: 'column', gap: 9 }}>
+                    <Box style={{ flexDirection: 'row', gap: 10 }}>
+                        <Text style={{ width: 92, fontSize: 17, color: '#4A5568', fontFamily: '微软雅黑' }}>别称</Text>
+                        <Text style={{ flex: 1, fontSize: 17, color: '#1A2230', fontFamily: '微软雅黑' }}>销售额 / 营业额 / GMV / 流水 / 业绩</Text>
+                    </Box>
+                    <Box style={{ flexDirection: 'row', gap: 10 }}>
+                        <Text style={{ width: 92, fontSize: 17, color: '#4A5568', fontFamily: '微软雅黑' }}>表达式</Text>
+                        <Text style={{ flex: 1, fontSize: 17, fontWeight: 'bold', color: '#0E3F8C', fontFamily: '微软雅黑' }}>SUM(oi.quantity * oi.unit_price)</Text>
+                    </Box>
+                    <Box style={{ flexDirection: 'row', gap: 10 }}>
+                        <Text style={{ width: 92, fontSize: 17, color: '#4A5568', fontFamily: '微软雅黑' }}>来源表</Text>
+                        <Text style={{ flex: 1, fontSize: 17, color: '#1A2230', fontFamily: '微软雅黑' }}>orders、order_items</Text>
+                    </Box>
+                    <Box style={{ flexDirection: 'row', gap: 10 }}>
+                        <Text style={{ width: 92, fontSize: 17, color: '#4A5568', fontFamily: '微软雅黑' }}>必带条件</Text>
+                        <Text style={{ flex: 1, fontSize: 17, color: '#1A2230', fontFamily: '微软雅黑' }}>status NOT IN ('cancelled', 'pending')</Text>
+                    </Box>
+                    <Box style={{ flexDirection: 'row', gap: 10 }}>
+                        <Text style={{ width: 92, fontSize: 17, color: '#4A5568', fontFamily: '微软雅黑' }}>口径边界</Text>
+                        <Text style={{ flex: 1, fontSize: 17, color: '#1A2230', fontFamily: '微软雅黑', lineHeight: 1.5 }}>
+                            不含已取消与未支付订单；不扣除退款
+                        </Text>
+                    </Box>
+                </Box>
+
+                <Text style={{ fontSize: 17, color: '#4A5568', fontFamily: '微软雅黑', lineHeight: 1.6 }}>
+                    字段是 SQL 片段而非自然语句，模型照抄即可，不需要它自己推断。
+                </Text>
+            </Box>
+        </Box>
+
+        {/* 底部结论条 */}
+        <Box style={{
+            width: '100%', height: 72, background: '#0E3F8C',
+            flexDirection: 'row', alignItems: 'center', padding: '0 24px', gap: 16,
+        }}>
+            <Text style={{ fontSize: 20, fontWeight: 'bold', color: '#FFFFFF', fontFamily: '微软雅黑' }}>
+                同一份配置供三处消费
+            </Text>
+            <Text style={{ fontSize: 19, color: 'rgba(255,255,255,0.85)', fontFamily: '微软雅黑' }}>
+                Prompt 组装时作为候选口径　·　守卫校验时作为表字段白名单　·　回答里作为口径说明展示给用户
+            </Text>
+        </Box>
+    </Box>
+
+    {/* D 页脚 */}
+    <Box style={{ width: '100%', height: 40, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', padding: '0 40px' }}>
+        <Text style={{ fontSize: 14, color: '#8B97A8', fontFamily: '微软雅黑' }}>Text2SQL 电商数据分析 Agent</Text>
+        <Text style={{ fontSize: 15, color: '#1E4FA8', fontFamily: 'Times New Roman' }}>07 / 16</Text>
+    </Box>
+</Slide>

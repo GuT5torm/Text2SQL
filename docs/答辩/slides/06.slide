@@ -1,0 +1,91 @@
+<Slide style={{ background: '#FFFFFF', padding: 0, flexDirection: 'column' }}>
+    {/* A3 页眉 */}
+    <Box style={{
+        width: '100%', height: 72, background: '#0E3F8C',
+        flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+        padding: '0 40px',
+    }}>
+        <Box style={{ flexDirection: 'row', alignItems: 'center', gap: 14 }}>
+            <Box style={{ width: 5, height: 26, background: '#3D7BD9' }} />
+            <Text style={{ fontSize: 32, fontWeight: 'bold', color: '#FFFFFF', fontFamily: '微软雅黑' }}>
+                每个选择都有对应的约束
+            </Text>
+        </Box>
+        <Text style={{ fontSize: 15, color: 'rgba(255,255,255,0.7)', fontFamily: '微软雅黑' }}>
+            系统设计
+        </Text>
+    </Box>
+
+    <Box style={{ flex: 1, flexDirection: 'column', padding: '24px 40px 0 40px', gap: 10 }}>
+        <Text style={{ fontSize: 21, color: '#4A5568', fontFamily: '微软雅黑' }}>
+            选型不是按流行度排的，每一项都能指回一条必须满足的约束。版本号为本机实测，不是文档里的参考值。
+        </Text>
+
+        {/* 表头 */}
+        <Box style={{ flexDirection: 'row', alignItems: 'center', height: 44, background: '#0E3F8C', padding: '0 16px' }}>
+            <Text style={{ width: 300, fontSize: 19, fontWeight: 'bold', color: '#FFFFFF', fontFamily: '微软雅黑' }}>技术选择</Text>
+            <Text style={{ width: 140, fontSize: 19, fontWeight: 'bold', color: '#FFFFFF', fontFamily: '微软雅黑' }}>版本</Text>
+            <Text style={{ flex: 1, fontSize: 19, fontWeight: 'bold', color: '#FFFFFF', fontFamily: '微软雅黑' }}>对应约束</Text>
+        </Box>
+
+        <Box style={{ flexDirection: 'row', alignItems: 'center', height: 44, border: { bottom: { width: 1, color: '#E5E7EB' } }, padding: '0 16px' }}>
+            <Text style={{ width: 300, fontSize: 19, fontWeight: 'bold', color: '#1E4FA8', fontFamily: '微软雅黑' }}>LangGraph</Text>
+            <Text style={{ width: 140, fontSize: 18, color: '#4A5568', fontFamily: 'Times New Roman' }}>1.2.11</Text>
+            <Text style={{ flex: 1, fontSize: 19, color: '#1A2230', fontFamily: '微软雅黑' }}>需要带条件分支与重试回环的编排，不是一条线性链路</Text>
+        </Box>
+
+        <Box style={{ flexDirection: 'row', alignItems: 'center', height: 44, background: '#F7F9FC', border: { bottom: { width: 1, color: '#E5E7EB' } }, padding: '0 16px' }}>
+            <Text style={{ width: 300, fontSize: 19, fontWeight: 'bold', color: '#1E4FA8', fontFamily: '微软雅黑' }}>sqlglot</Text>
+            <Text style={{ width: 140, fontSize: 18, color: '#4A5568', fontFamily: 'Times New Roman' }}>30.18.0</Text>
+            <Text style={{ flex: 1, fontSize: 19, color: '#1A2230', fontFamily: '微软雅黑' }}>需要在执行前把语句解析成语法树，才能做表字段白名单校验</Text>
+        </Box>
+
+        <Box style={{ flexDirection: 'row', alignItems: 'center', height: 44, border: { bottom: { width: 1, color: '#E5E7EB' } }, padding: '0 16px' }}>
+            <Text style={{ width: 300, fontSize: 19, fontWeight: 'bold', color: '#1E4FA8', fontFamily: '微软雅黑' }}>FastAPI</Text>
+            <Text style={{ width: 140, fontSize: 18, color: '#4A5568', fontFamily: 'Times New Roman' }}>0.141.1</Text>
+            <Text style={{ flex: 1, fontSize: 19, color: '#1A2230', fontFamily: '微软雅黑' }}>需要服务端推送与结构化请求校验，前端要看到逐节点的进度</Text>
+        </Box>
+
+        <Box style={{ flexDirection: 'row', alignItems: 'center', height: 44, background: '#F7F9FC', border: { bottom: { width: 1, color: '#E5E7EB' } }, padding: '0 16px' }}>
+            <Text style={{ width: 300, fontSize: 19, fontWeight: 'bold', color: '#1E4FA8', fontFamily: '微软雅黑' }}>Pydantic</Text>
+            <Text style={{ width: 140, fontSize: 18, color: '#4A5568', fontFamily: 'Times New Roman' }}>2.13.5</Text>
+            <Text style={{ flex: 1, fontSize: 19, color: '#1A2230', fontFamily: '微软雅黑' }}>模型返回的 JSON 必须过 schema 校验，不合格不进下一步</Text>
+        </Box>
+
+        <Box style={{ flexDirection: 'row', alignItems: 'center', height: 44, border: { bottom: { width: 1, color: '#E5E7EB' } }, padding: '0 16px' }}>
+            <Text style={{ width: 300, fontSize: 19, fontWeight: 'bold', color: '#1E4FA8', fontFamily: '微软雅黑' }}>SQLite + SQLAlchemy</Text>
+            <Text style={{ width: 140, fontSize: 18, color: '#4A5568', fontFamily: 'Times New Roman' }}>2.0.52</Text>
+            <Text style={{ flex: 1, fontSize: 19, color: '#1A2230', fontFamily: '微软雅黑' }}>演示规模在十万行级；换库触发条件已写进设计文档</Text>
+        </Box>
+
+        <Box style={{ flexDirection: 'row', alignItems: 'center', height: 44, background: '#F7F9FC', border: { bottom: { width: 1, color: '#E5E7EB' } }, padding: '0 16px' }}>
+            <Text style={{ width: 300, fontSize: 19, fontWeight: 'bold', color: '#1E4FA8', fontFamily: '微软雅黑' }}>React + Vite</Text>
+            <Text style={{ width: 140, fontSize: 18, color: '#4A5568', fontFamily: 'Times New Roman' }}>18.3.1 / 5.4.0</Text>
+            <Text style={{ flex: 1, fontSize: 19, color: '#1A2230', fontFamily: '微软雅黑' }}>需要按流式事件增量渲染，而不是等整轮结束再出结果</Text>
+        </Box>
+
+        <Box style={{ flexDirection: 'row', alignItems: 'center', height: 44, border: { bottom: { width: 1, color: '#E5E7EB' } }, padding: '0 16px' }}>
+            <Text style={{ width: 300, fontSize: 19, fontWeight: 'bold', color: '#1E4FA8', fontFamily: '微软雅黑' }}>ECharts</Text>
+            <Text style={{ width: 140, fontSize: 18, color: '#4A5568', fontFamily: 'Times New Roman' }}>5.5.1</Text>
+            <Text style={{ flex: 1, fontSize: 19, color: '#1A2230', fontFamily: '微软雅黑' }}>图表配置由后端规则生成，前端只负责渲染，保证口径一致</Text>
+        </Box>
+
+        {/* 底部结论条 */}
+        <Box style={{ background: '#E8EFF8', padding: '12px 20px', flexDirection: 'row', alignItems: 'center', gap: 14, marginTop: 2 }}>
+            <Text style={{ fontSize: 20, fontWeight: 'bold', color: '#0E3F8C', fontFamily: '微软雅黑' }}>没有引入</Text>
+            <Text style={{ fontSize: 19, color: '#4A5568', fontFamily: '微软雅黑' }}>
+                向量数据库、Redis、消息队列、容器编排。演示规模下它们不解决问题，只会增加部署与排查成本。
+            </Text>
+        </Box>
+
+        <Text style={{ fontSize: 14, color: '#8B97A8', fontFamily: '微软雅黑' }}>
+            版本号取自 backend/.venv 的 importlib.metadata 与 frontend/package.json，2026-09-29 实测。
+        </Text>
+    </Box>
+
+    {/* D 页脚 */}
+    <Box style={{ width: '100%', height: 40, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', padding: '0 40px' }}>
+        <Text style={{ fontSize: 14, color: '#8B97A8', fontFamily: '微软雅黑' }}>Text2SQL 电商数据分析 Agent</Text>
+        <Text style={{ fontSize: 15, color: '#1E4FA8', fontFamily: 'Times New Roman' }}>06 / 16</Text>
+    </Box>
+</Slide>

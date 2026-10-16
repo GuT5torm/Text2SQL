@@ -1,0 +1,82 @@
+<Slide style={{ background: '#FFFFFF', padding: 0, flexDirection: 'row' }}>
+    {/* 左侧深蓝栏 */}
+    <Box style={{
+        width: 380, height: '100%', background: '#0E3F8C',
+        flexDirection: 'column', justifyContent: 'center', padding: '0 48px', gap: 18,
+    }}>
+        <Box style={{ width: 64, height: 5, background: '#3D7BD9' }} />
+        <Text style={{ fontSize: 56, fontWeight: 'bold', color: '#FFFFFF', fontFamily: '微软雅黑', lineHeight: 1.2 }}>
+            目录
+        </Text>
+        <Text style={{ fontSize: 22, color: 'rgba(255,255,255,0.62)', fontFamily: 'Times New Roman', letterSpacing: 3 }}>
+            CONTENTS
+        </Text>
+        <Text style={{ fontSize: 15, color: 'rgba(255,255,255,0.55)', fontFamily: '微软雅黑', marginTop: 26, lineHeight: 1.9 }}>
+            16 页 · 讲解 12–15 分钟<br />第 10 至 13 页为可信性设计
+        </Text>
+    </Box>
+
+    {/* 右侧条目 */}
+    <Box style={{
+        flex: 1, flexDirection: 'column', justifyContent: 'center',
+        padding: '0 64px', gap: 20,
+    }}>
+        <Box style={{ flexDirection: 'row', alignItems: 'center', gap: 20 }}>
+            <Box style={{ width: 46, height: 46, background: '#1E4FA8', borderRadius: 4, alignItems: 'center', justifyContent: 'center' }}>
+                <Text style={{ fontSize: 22, fontWeight: 'bold', color: '#FFFFFF', fontFamily: 'Times New Roman' }}>01</Text>
+            </Box>
+            <Box style={{ flexDirection: 'column', gap: 3 }}>
+                <Text style={{ fontSize: 26, fontWeight: 'bold', color: '#1A2230', fontFamily: '微软雅黑' }}>选题与目标</Text>
+                <Text style={{ fontSize: 17, color: '#8B97A8', fontFamily: '微软雅黑' }}>业务取数的等待链路，以及本项目的验收口径</Text>
+            </Box>
+        </Box>
+
+        <Box style={{ width: '100%', height: 1, background: '#E5E7EB' }} />
+
+        <Box style={{ flexDirection: 'row', alignItems: 'center', gap: 20 }}>
+            <Box style={{ width: 46, height: 46, background: '#1E4FA8', borderRadius: 4, alignItems: 'center', justifyContent: 'center' }}>
+                <Text style={{ fontSize: 22, fontWeight: 'bold', color: '#FFFFFF', fontFamily: 'Times New Roman' }}>02</Text>
+            </Box>
+            <Box style={{ flexDirection: 'column', gap: 3 }}>
+                <Text style={{ fontSize: 26, fontWeight: 'bold', color: '#1A2230', fontFamily: '微软雅黑' }}>系统设计</Text>
+                <Text style={{ fontSize: 17, color: '#8B97A8', fontFamily: '微软雅黑' }}>六层架构、语义层、十四节点状态机与安全沙箱</Text>
+            </Box>
+        </Box>
+
+        <Box style={{ width: '100%', height: 1, background: '#E5E7EB' }} />
+
+        <Box style={{ flexDirection: 'row', alignItems: 'center', gap: 20 }}>
+            <Box style={{ width: 46, height: 46, background: '#1E4FA8', borderRadius: 4, alignItems: 'center', justifyContent: 'center' }}>
+                <Text style={{ fontSize: 22, fontWeight: 'bold', color: '#FFFFFF', fontFamily: 'Times New Roman' }}>03</Text>
+            </Box>
+            <Box style={{ flexDirection: 'column', gap: 3 }}>
+                <Text style={{ fontSize: 26, fontWeight: 'bold', color: '#1A2230', fontFamily: '微软雅黑' }}>可信性设计</Text>
+                <Text style={{ fontSize: 17, color: '#8B97A8', fontFamily: '微软雅黑' }}>口径签名、数字回溯、审计留痕与边界诚实性</Text>
+            </Box>
+        </Box>
+
+        <Box style={{ width: '100%', height: 1, background: '#E5E7EB' }} />
+
+        <Box style={{ flexDirection: 'row', alignItems: 'center', gap: 20 }}>
+            <Box style={{ width: 46, height: 46, background: '#1E4FA8', borderRadius: 4, alignItems: 'center', justifyContent: 'center' }}>
+                <Text style={{ fontSize: 22, fontWeight: 'bold', color: '#FFFFFF', fontFamily: 'Times New Roman' }}>04</Text>
+            </Box>
+            <Box style={{ flexDirection: 'column', gap: 3 }}>
+                <Text style={{ fontSize: 26, fontWeight: 'bold', color: '#1A2230', fontFamily: '微软雅黑' }}>验证与演示</Text>
+                <Text style={{ fontSize: 17, color: '#8B97A8', fontFamily: '微软雅黑' }}>真实模型下的六个运行场景与十组评测结果</Text>
+            </Box>
+        </Box>
+
+        <Box style={{ width: '100%', height: 1, background: '#E5E7EB' }} />
+
+        <Box style={{ flexDirection: 'row', alignItems: 'center', gap: 20 }}>
+            <Box style={{ width: 46, height: 46, background: '#1E4FA8', borderRadius: 4, alignItems: 'center', justifyContent: 'center' }}>
+                <Text style={{ fontSize: 22, fontWeight: 'bold', color: '#FFFFFF', fontFamily: 'Times New Roman' }}>05</Text>
+            </Box>
+            <Box style={{ flexDirection: 'column', gap: 3 }}>
+                <Text style={{ fontSize: 26, fontWeight: 'bold', color: '#1A2230', fontFamily: '微软雅黑' }}>总结与展望</Text>
+                <Text style={{ fontSize: 17, color: '#8B97A8', fontFamily: '微软雅黑' }}>已实现的能力、明确不做的范围与后续演进</Text>
+            </Box>
+        </Box>
+    </Box>
+</Slide>
