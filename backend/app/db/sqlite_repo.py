@@ -48,6 +48,25 @@ from app.db.repository import (
 _PROGRESS_INTERVAL = 1000
 
 
+def _to_date(value: Any) -> dt.date | None:
+    """把库内取到的最大日期统一成 date。
+
+    SQLite 经 SQLAlchemy 返回 TEXT 时是 'YYYY-MM-DD HH:MM:SS' 字符串；
+    换驱动（或换库）可能直接返回 datetime / date。三种形态都要认，
+    否则 data_as_of 会在某一种驱动上静默变成 None。
+    """
+    if value is None:
+        return None
+    if isinstance(value, dt.datetime):
+        return value.date()
+    if isinstance(value, dt.date):
+        return value
+    text_value = str(value).strip()
+    if not text_value:
+        return None
+    return dt.date.fromisoformat(text_value[:10])
+
+
 def _dedupe_columns(columns: list[str]) -> list[str]:
     """重名列补序号后缀，保证列名在结果集内唯一。
 
@@ -194,6 +213,19 @@ class SqliteQueryRepository(QueryRepository):
             raise ValueError(f"非法的表名：{table}")
         with self.engine.connect() as conn:
             return int(conn.execute(text(f"SELECT COUNT(*) FROM {table}")).scalar() or 0)
+
+    def data_as_of(self) -> dt.date | None:
+        # 一条语句取两表的最大日期再取较早者。MIN 聚合自动忽略空表产生的
+        # NULL，因此单表有数据时返回那张表的截止日，与 /api/health 口径一致
+        with self.engine.connect() as conn:
+            value = conn.execute(
+                text(
+                    "SELECT MIN(m) FROM ("
+                    "SELECT MAX(created_at) AS m FROM orders "
+                    "UNION ALL SELECT MAX(created_at) AS m FROM refunds)"
+                )
+            ).scalar()
+        return _to_date(value)
 
 
 class SqliteSessionStore(SessionStore):

@@ -19,8 +19,12 @@
     robust       结论数字核对、时间区间一致性、脱敏管道（FR-B-3 / FR-D-5 /
                  FR-I-3）。
     alert        异常订阅：命中、未命中、失败可区分与同周期幂等（FR-O-1~O-5）。
+    multiturn    多轮改写与槽位结构化（FR-A-1~A-5）。
+    advanced     窗口函数与 CTE（FR-J-1），桩模式下全部跳过。
+    outofscope   答非所问的两类终态：域外问题不生成查询、归因问题不给数字。
+                 与其余各组相反，本组验的是「系统什么时候不该给数」。
 
-八组各自得出一项指标，互不替代：口径召回准确率、端到端可执行率、危险语句
+各组各自得出一项指标，互不替代：口径召回准确率、端到端可执行率、危险语句
 拦截率、血缘字段完整率、对比基准判定率、下钻与异常标记判定率、核对与脱敏
 完整率、异常订阅判定率。合成一个总数会把性质完全不同的东西平均掉，因此不做。
 
@@ -28,8 +32,13 @@
 
     .venv/Scripts/python.exe eval/run_eval.py
     .venv/Scripts/python.exe eval/run_eval.py --group recall --verbose
-    .venv/Scripts/python.exe eval/run_eval.py --today 2026-09-15
+    .venv/Scripts/python.exe eval/run_eval.py --today 2026-10-14
     .venv/Scripts/python.exe eval/run_eval.py --group datalineage --verbose
+
+时间锚点：不传 --today 时取库内 data_as_of（orders 与 refunds 两表中较早的
+最大 created_at），与生产链路同一来源——问答里「上个月」按数据截止日换算，
+评测要验的就是这条路径，锚点取系统日期会验出一条生产不会走的行为。库不可用
+或取不到截止日时退回评测集的 reference_today。
 """
 
 from __future__ import annotations
@@ -58,8 +67,13 @@ from app.agent.alert_eval import evaluate_rule  # noqa: E402
 from app.api.deps import build_container  # noqa: E402
 from app.db.masking import mask_result  # noqa: E402
 from app.db.repository import AlertRuleRecord  # noqa: E402
+from app.db.sqlite_repo import SqliteQueryRepository  # noqa: E402
 from app.llm.schemas import SqlDraft  # noqa: E402
 from app.observability import counters, reset_counters  # noqa: E402
+from app.semantic.expression_check import (  # noqa: E402
+    check_expression_signatures,
+    signatures_for,
+)
 from app.semantic.loader import UNSUPPORTED_CAVEAT_PREFIX, Catalog, load_catalog, recall  # noqa: E402
 
 T2SQL_ROOT = BACKEND_DIR.parent
@@ -112,6 +126,15 @@ EXPECT_FIELDS: dict[str, set[str]] = {
         "filters", "order_by", "top_n",
         # FR-D-4 补充：期望 caveats 里出现/不出现未收录维度提示
         "dimension_caveat",
+        # 口径断言：SQL 的聚合表达式必须满足这里列出的指标的
+        # expression_signature。与运行时 validate 节点共用同一个校验器与
+        # 同一份签名定义，见 app/semantic/expression_check.py。
+        #
+        # 这一维补的是既有断言的盲区：status / min_rows / chart_type 只能证明
+        # 「跑出了结果」，dimensions / must_join 只能证明「用了对的表与列」，
+        # 都不能证明「算的是对的量」。问题问毛利而语句算成交额时，四条断言
+        # 全部成立——结果是能执行、有数据、图也画得出，用户拿到的却是错的数。
+        "metric_signature",
     },
     "safety": {
         "inject_sql", "blocked", "status", "max_rows",
@@ -193,6 +216,18 @@ EXPECT_FIELDS: dict[str, set[str]] = {
     "advanced": {
         "status", "min_rows", "requires_llm",
         "sql_contains",
+    },
+    # 答非所问的两类终态（域外 / 归因）：
+    #   status           期望终态 out_of_scope / attribution / ok
+    #   intent           期望意图，与 status 分开断言：两者同名但由不同节点产出
+    #   no_sql           断言本轮没有生成任何语句。这是本组的核心——
+    #                    这两类问题一旦生成 SQL，用户拿到的就是一个无关数字
+    #   answer_contains  答案里必须出现的子串（替代问法、判定依据等）
+    "outofscope": {
+        "status", "intent", "no_sql", "answer_contains",
+    },
+    "slotcoverage": {
+        "slot_gap_kinds",
     },
 }
 
@@ -594,6 +629,20 @@ def run_pipeline(cases: list[dict[str, Any]], container: Any) -> list[CaseOutcom
                 missing_joins = _must_join(sql, want_joins)
                 if missing_joins:
                     reasons.append(f"JOIN：SQL 未与 {missing_joins} 表连接")
+            want_sig = expect.get("metric_signature")
+            if want_sig:
+                known = {m.get("name"): m for m in container.catalog.metrics}
+                unknown = [n for n in want_sig if n not in known]
+                if unknown:
+                    # 用例里写了不存在的指标名。报出来而不是静默跳过——
+                    # 拼错名字的断言如果被忽略，这一维就等于没写。
+                    reasons.append(f"口径：用例引用了未登记的指标 {unknown}")
+                else:
+                    problems = check_expression_signatures(
+                        sql, signatures_for([known[n] for n in want_sig])
+                    )
+                    if problems:
+                        reasons.append("口径：" + "；".join(problems))
 
         # 未收录维度提示（FR-D-4 补充）：这条断言与链路是否跑通无关，
         # 因此放在 status 判断之外——系统应当在不报错时也把口径风险说清楚。
@@ -1396,6 +1445,122 @@ def run_alert(cases: list[dict[str, Any]], container: Any) -> list[CaseOutcome]:
 
 
 # ---------------------------------------------------------------------------
+# outofscope 组（域外 / 归因两类终态）
+# ---------------------------------------------------------------------------
+
+
+def run_outofscope(cases: list[dict[str, Any]], container: Any) -> list[CaseOutcome]:
+    """答非所问的两类终态断言。
+
+    与 pipeline 相反的一组：本组验的是「系统什么时候不该给数」。这两类问题
+    此前会被当成普通取数处理，生成一条语法正确、能执行、有图表的 SQL，
+    用户拿到一个与自己问题无关的数字且全程无报错——是所有失败形态里最难
+    被发现的一种。
+
+    桩模式下这两个分支由 gateway 的关键词表触发，真实模式下由 route 节点
+    判定，因此本组在两种模式下都断言，不标 requires_llm。
+    """
+    outcomes: list[CaseOutcome] = []
+    for case in cases:
+        expect = case.get("expect") or {}
+        result = _invoke(container, f"eval-{case['id']}", case["question"], None)
+
+        status = result.get("status")
+        intent = result.get("intent")
+        sql = (result.get("sql") or "").strip()
+        answer = result.get("answer") or ""
+        observed = {
+            "status": status,
+            "intent": intent,
+            "sql": sql,
+            "answer": answer,
+            "stages": [s.get("node") for s in result.get("stages") or []],
+        }
+        reasons: list[str] = []
+
+        if "status" in expect and status != expect["status"]:
+            reasons.append(f"终态：期望 {expect['status']}，实际 {status}")
+        if "intent" in expect and intent != expect["intent"]:
+            reasons.append(f"意图：期望 {expect['intent']}，实际 {intent}")
+        if expect.get("no_sql") and sql:
+            reasons.append(
+                "本轮不该生成语句，实际生成了 SQL（问题会被当成取数回答）："
+                + " ".join(sql.split())[:120]
+            )
+        missing = [n for n in (expect.get("answer_contains") or []) if n not in answer]
+        if missing:
+            reasons.append(f"答案：未出现 {missing}")
+
+        outcomes.append(
+            CaseOutcome(
+                case_id=case["id"],
+                question=case["question"],
+                intent=case.get("intent", ""),
+                passed=not reasons,
+                reasons=reasons,
+                observed=observed,
+            )
+        )
+    return outcomes
+
+
+# ---------------------------------------------------------------------------
+# slotcoverage 组（槽位覆盖核对）
+# ---------------------------------------------------------------------------
+
+
+def run_slotcoverage(cases: list[dict[str, Any]], container: Any) -> list[CaseOutcome]:
+    """route 抽出的槽位有没有落进 SQL。
+
+    这一组验的是「语句合法、口径也对，但答的不是问的那件事」能否被看出来。
+    它不阻断执行（假告警会把正确结果改成放弃），所以断言的是核对结果本身
+    是否准确，而不是终态。
+
+    桩实现的语句由语义层模板派生，不带时间谓词也不带区域过滤，因此同一问句
+    在两种模式下的缺口集合不同：桩模式下的期望值标 mock_only，真实模式下
+    按 skipped 处理，避免用一个模式的数字去衡量另一个模式。
+    """
+    outcomes: list[CaseOutcome] = []
+    mock = bool(container.gateway.mock)
+    for case in cases:
+        if not mock and case.get("mock_only"):
+            outcomes.append(
+                CaseOutcome(
+                    case_id=case["id"],
+                    question=case["question"],
+                    intent=case.get("intent", ""),
+                    passed=False,
+                    reasons=[],
+                    observed={"skipped": "该断言只在桩模式下成立"},
+                    skipped=True,
+                )
+            )
+            continue
+
+        expect = case.get("expect") or {}
+        result = _invoke(container, f"eval-{case['id']}", case["question"], None)
+        gaps = result.get("slot_gaps") or []
+        kinds = sorted({str(g.get("kind")) for g in gaps})
+        want = sorted({str(k) for k in (expect.get("slot_gap_kinds") or [])})
+
+        reasons: list[str] = []
+        if kinds != want:
+            reasons.append(f"槽位缺口：期望 {want or '无'}，实际 {kinds or '无'}")
+
+        outcomes.append(
+            CaseOutcome(
+                case_id=case["id"],
+                question=case["question"],
+                intent=case.get("intent", ""),
+                passed=not reasons,
+                reasons=reasons,
+                observed={"slot_gaps": gaps, "kinds": kinds, "sql": result.get("sql") or ""},
+            )
+        )
+    return outcomes
+
+
+# ---------------------------------------------------------------------------
 # 计分与报告
 # ---------------------------------------------------------------------------
 
@@ -1520,29 +1685,60 @@ def _assert_invariants(group_name: str, summary: dict[str, Any], outcomes: list[
         )
 
 
+def _default_today(meta: dict[str, Any]) -> tuple[date, str]:
+    """默认时间锚点：库内 data_as_of；取不到时退回评测集 reference_today。
+
+    与生产一致：问答里的相对时间词按数据截止日换算，评测要验的就是这条路径。
+    库不可用（未造数）或两表都空时退回 reference_today，此时结论只对编写
+    用例时的数据形态有效，跑出来的报告会带上来源，不会和线上行为混淆。
+    """
+    try:
+        as_of = SqliteQueryRepository().data_as_of()
+    except Exception:  # noqa: BLE001 - 库缺失时不该挡住 recall 组的纯配置核对
+        as_of = None
+    if as_of is not None:
+        return as_of, "库内 data_as_of"
+    ref = meta.get("reference_today")
+    if not ref:
+        raise SystemExit(
+            "未指定 --today，业务库也取不到 data_as_of，评测集没有 reference_today 可退回"
+        )
+    return date.fromisoformat(str(ref)), "评测集 reference_today"
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="跑评测集")
     parser.add_argument(
         "--group",
         choices=(
             "recall", "pipeline", "safety", "datalineage", "baseline",
-            "drilldown", "robust", "alert", "multiturn", "advanced", "all",
+            "drilldown", "robust", "alert", "multiturn", "advanced",
+            "outofscope", "slotcoverage", "all",
         ),
         default="all",
         help="只跑某一组，默认全跑",
     )
-    parser.add_argument("--today", help="时间锚点 YYYY-MM-DD，默认取评测集的 reference_today")
+    parser.add_argument(
+        "--today",
+        help="时间锚点 YYYY-MM-DD，默认取库内 data_as_of（取不到时退回评测集 reference_today）",
+    )
     parser.add_argument("--verbose", action="store_true", help="打印每条的观察值")
     parser.add_argument("--output", default=str(REPORT_PATH), help="报告落盘路径")
     args = parser.parse_args(argv)
 
     suite = load_cases()
     meta = suite.get("meta") or {}
-    today_str = args.today or meta.get("reference_today")
-    today = date.fromisoformat(str(today_str))
+    if args.today:
+        today = date.fromisoformat(args.today)
+        today_source = "--today 参数"
+    else:
+        today, today_source = _default_today(meta)
 
     print(f"评测集：{meta.get('name')}")
-    print(f"时间锚点：{today.isoformat()}" + (f"（{meta.get('reference_weekday', '')}）" if meta.get("reference_weekday") else ""))
+    print(
+        f"时间锚点：{today.isoformat()}（{today_source}）"
+        + (f"（{meta.get('reference_weekday', '')}）" if meta.get("reference_weekday") else "")
+    )
     print(f"评测时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
     groups = suite.get("groups") or {}
@@ -1556,7 +1752,8 @@ def main(argv: list[str] | None = None) -> int:
     need_recall = args.group in ("recall", "all")
     need_graph = args.group in (
         "pipeline", "safety", "datalineage", "baseline",
-        "drilldown", "robust", "alert", "multiturn", "advanced", "all",
+        "drilldown", "robust", "alert", "multiturn", "advanced", "outofscope",
+        "slotcoverage", "all",
     )
 
     container = None
@@ -1730,6 +1927,40 @@ def main(argv: list[str] | None = None) -> int:
             "cases": [_outcome_to_dict(o) for o in outcomes],
         }
         _assert_invariants("advanced", summary, outcomes)
+        failures += summary["total"] - summary["passed"]
+
+    if args.group in ("outofscope", "all"):
+        assert container is not None
+        cases = groups.get("outofscope", {}).get("cases") or []
+        outcomes = run_outofscope(cases, container)
+        print_outcomes(
+            f"outofscope　{groups.get('outofscope', {}).get('description', '')}",
+            outcomes,
+            args.verbose,
+        )
+        summary = print_summary_simple("\n超范围与归因判定率", outcomes)
+        report["groups"]["outofscope"] = {
+            **summary,
+            "cases": [_outcome_to_dict(o) for o in outcomes],
+        }
+        _assert_invariants("outofscope", summary, outcomes)
+        failures += summary["total"] - summary["passed"]
+
+    if args.group in ("slotcoverage", "all"):
+        assert container is not None
+        cases = groups.get("slotcoverage", {}).get("cases") or []
+        outcomes = run_slotcoverage(cases, container)
+        print_outcomes(
+            f"slotcoverage　{groups.get('slotcoverage', {}).get('description', '')}",
+            outcomes,
+            args.verbose,
+        )
+        summary = print_summary_simple("\n槽位覆盖核对准确率", outcomes)
+        report["groups"]["slotcoverage"] = {
+            **summary,
+            "cases": [_outcome_to_dict(o) for o in outcomes],
+        }
+        _assert_invariants("slotcoverage", summary, outcomes)
         failures += summary["total"] - summary["passed"]
 
     if container is not None:

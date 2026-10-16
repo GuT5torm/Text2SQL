@@ -14,6 +14,7 @@ summarize 之前」。基准值是结论生成的输入项，不是补充注释�
 
 from __future__ import annotations
 
+import datetime as dt
 import logging
 import time
 from typing import Any
@@ -35,6 +36,10 @@ def enrich_node(
     *,
     repo: QueryRepository,
     catalog: Catalog,
+    # 时间词锚点：库内数据截止日。基准的「本期是否未走完」按它判定，而不是
+    # 按系统日期——数据截止 2026-09-22 时问「本月」，9 月对系统日期（10 月）
+    # 早就走完了，但对数据而言只到 22 日，后半句才是用户看到的口径。
+    today: dt.date | None = None,
 ) -> dict[str, Any]:
     """读 execute 节点的产出，计算本轮的对比基准与异常标记并写入 state。
 
@@ -64,6 +69,7 @@ def enrich_node(
             data_freshness=data_freshness,
             catalog=catalog,
             repo=repo,
+            today=today,
         )
     except Exception as exc:  # noqa: BLE001 - 兜住意外路径，不影响主链路
         logger.warning("基准计算失败：%s", exc)

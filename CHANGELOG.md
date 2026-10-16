@@ -655,3 +655,305 @@ FR-D-4 原本只覆盖「指标口径未命中」（`metric_used` 为空时的�
   只有首句提问时才建会话；一轮落库后由 `refreshToken` 让侧边栏重拉，并回取元数据刷新
   页面标题与轮次（后端在首轮落库时才把默认标题改成问句）。实测：页面加载不新增会话，
   提问后新增 1 条且标题取自问句；点「新建对话」不落库
+
+## T41　口径断言与口径守卫
+
+提交：本批统一一个 commit
+
+实施日期：2026-09-23　｜　范围：评测判别力与运行时校验，不含 FRD 需求编号
+
+### 起因
+
+核查 `eval/report.json` 时发现 pipeline 组存在漏报。`flow-p003`（各品类今年的毛利）
+判为通过，但它生成的语句聚合的是 `SUM(oi.quantity * oi.unit_price)`，全程没有用到
+`p.cost_price`；同一轮挂上的 caveats 却是毛利口径。界面上会同时出现「成交总额」列与
+「毛利」口径提示，两者矛盾而系统不报错。同类问题还有 `flow-p009`（问下单人数答成交额），
+同样判为通过。
+
+根因是断言维度不全：`status` / `min_rows` / `chart_type` 只能证明「跑出了结果」，
+`dimensions` / `must_join` 只能证明「用了对的表与列」，没有任何一条能证明「算的是对的量」。
+
+### 改动
+
+**语义层声明口径签名（`metrics.yaml`）**
+
+七个成交类指标各加 `expression_signature`，两类判据：
+
+- `require_all`——SQL 中必须出现的标识。毛利 → `cost_price`；客单价 →
+  `unit_price` 与 `count(distinct`；退款率 → `refunds`；成交用户数 → `user_id`
+- `require_plain_aggregate.exclude`——要求存在一个不含这些标识的聚合。仅销量使用，
+  用来抓「问销量答成金额」：`SUM(quantity * unit_price)` 含 quantity，
+  单靠 `require_all` 拦不住
+
+判据取「存在一个干净聚合」而非「全部干净」，是为了放行同一轮命中多个指标的正常写法
+（问「各品类的销量和成交总额」时两种聚合同时出现，不应判为口径不符）。
+
+**新建 `app/semantic/expression_check.py`**
+
+纯函数，不执行 SQL、不调用模型：`normalize_sql`（小写、压空白、吃掉左括号两侧空格，
+让 `COUNT ( DISTINCT` 与 `COUNT(DISTINCT` 等价）、`check_expression_signatures`
+（按签名比对，返回可直接回灌给 fix 的中文说明）、`signatures_for`（从指标定义摘签名）。
+与 `db/guard.py` 的分工是：guard 管语句安不安全，本模块管口径对不对，两者互不替代。
+
+**运行时接入 validate 节点**
+
+- `state.py`：`RetrievedContext` 补 `metric_signatures`，并补齐此前已写入却未声明的
+  `unsupported_dimensions`
+- `retrieve.py`：把命中指标的签名摘进 `retrieved`——「本轮哪些指标需要校验」这个判断
+  留在召回环节，validate 不需要知道 Catalog 的结构
+- `validate.py`：守卫通过后再过口径，不符则 `_fail`，说明进 `fix_history` 并回到 fix
+  回环（重试上限 3 沿用）。两道关卡顺序固定：先安全、后口径
+
+**评测接入（`run_eval.py` / `cases.yaml`）**
+
+- `EXPECT_FIELDS` 的 pipeline 组加 `metric_signature`，判定调用与运行时同一个校验器；
+  用例写了不存在的指标名会直接报失败，不静默跳过
+- 九条 pipeline 用例各补齐期望指标；顶部注释载明该字段与 `sql_contains` 的分工
+
+**桩实现改为从语义层派生（新增 `app/llm/mock_sql.py`）**
+
+`_MOCK_SQL_BY_KEYWORD` 是关键词到整条 SQL 的映射，其中只有成交总额与退款率两种聚合
+表达式，问毛利、问订单量、问客单价、问成交用户数都会落到成交总额模板上。这是前两项
+可验证的前提：不修的话，运行时守卫会让桩模式下这四类问句全部进 fix 回环直到重试耗尽。
+
+新模块按「指标决定聚合表达式、维度决定分组列与 JOIN」从 `metrics.yaml` /
+`tables.yaml` 拼装，仍然不调用模型。TopN、排名、数值过滤三类修饰保留；比较阈值改为
+从问句解析（`高于 0%` → 0，`大于一百万` → 1000000），否则「退款率高于 0%」与
+「退款率高于 999999」会得到同一个 HAVING，两条评测用例一真一假无法区分。
+
+顺带修 `_mock_subject`：原先取「## …问题」标题之后的**全部**内容，而 `fix.md` 的
+「## 原始问题」后面还跟着「## 语义层信息」，语义层段落里列着全部指标名，桩实现会照着
+「退款率」生成一条退款查询。改为按小节截断到下一个二级标题。
+
+### 验证
+
+- `pytest -q`：**491 passed**（新增 `tests/test_expression_check.py` 16 条）
+- `eval/run_eval.py`：十组未通过 **0 条**——recall 37/37、pipeline 9/9（1 条 skip）、
+  safety 8/8、datalineage 5/5、baseline 6/6、drilldown 7/7、robust 2/2、alert 4/4、
+  multiturn 5/5、advanced 0/0（3 条 requires_llm）
+- pipeline 组由 6/9 升到 9/9：桩 SQL 口径修正后，此前因粒度与 JOIN 失败的
+  p006 / p007 / p008 一并转通过
+- 断言拦截能力验证：临时把 p003 的期望指标改成 `paying_users`（需要 `user_id`），
+  该条立刻转失败并给出「口径：成交用户数的口径不成立：语句中未出现 ['user_id']」，
+  验证后已还原用例
+- 反向验证：把期望改成 `gmv` 时该条仍然通过——毛利语句同样含 `unit_price`，
+  这是判据的正确行为而非漏检
+
+### 已知边界
+
+- 签名只做「必要成分」与「聚合纯度」两类判定，不检查过滤条件是否与口径声明一致：
+  时间范围与 `status NOT IN ('cancelled','pending')` 仍需靠 `caveats` 与结论核对器把关
+- 存在假阳性可能：若模型采用语义层未覆盖的等价写法（例如先子查询算出成本再相减），
+  `require_all` 会因找不到 `cost_price` 而误报。当前未观察到，出现时按具体情况放宽签名
+- 桩实现仍不处理过滤值（「华东区的」不会落到 WHERE），也不做问法改写，
+  定位依旧是链路打通与单测替身，产出不代表真实模型能力
+
+## T42　示例池扩充
+
+提交：本批统一一个 commit
+
+实施日期：2026-09-23　｜　范围：增强回答能力第 3 层，few-shot 语料补充
+
+### 起因
+
+`metrics.yaml` 的 `examples` 只有 8 条：成交总额 2 条，其余六个指标各 1 条。
+单条示例覆盖不了同一指标的不同问法——问日粒度、问 TopN、问口语说法时该写的
+语句形态并不相同，示例池太薄会让 few-shot 只在某一种问法上生效。
+
+### 改动
+
+七个指标各补至 5 条，合计 35 条。现有 8 条一条未动：`gmv-p003`、`rr-p001`、
+`pu-p001` 三条评测用例拿示例原文做召回回归，改原文会让它们失去意义。
+
+新增示例按缺失形态挑选，不按数量凑：
+
+| 覆盖形态 | 落点 |
+|---|---|
+| 日粒度分组 | 成交总额 / 销量 / 订单量 / 成交用户数 各一条，示范 `date()` 先截断再分组 |
+| 需 JOIN users 的维度 | 城市、会员等级——成交总额之外的五个指标都有覆盖 |
+| TopN | 成交额前 5 的品类，`LIMIT` 取用户说的数量而非默认 1000 |
+| 比值型的分子分母同源 | 客单价四条全部保持 `SUM(...) * 1.0 / COUNT(DISTINCT o.id)` |
+| 不分组汇总 | 「我上个月进账多少」，示范只出一行、不凭空补时间列 |
+| 口语说法 | 进账、出单量、卖出去多少货、件单价、退货比例、利润、毛利润 |
+| 枚举值过滤 | 「七天无理由的退款率」，过滤落在 `refunds.reason` 而非 orders 字段 |
+| 退款原因的计数口径 | 品类退货率示范 `LEFT JOIN refunds` 与 `COUNT(DISTINCT r.order_id)` |
+
+### 验证
+
+- 逐条校验 35 条示例：过守卫、过自身指标的口径签名、实际执行无报错，**失败 0 条**
+- `pytest -q`：**493 passed**（+2）
+- `eval/run_eval.py`：十组未通过 **0 条**，示例扩充未引起召回断言回归
+
+### 新增测试
+
+`tests/test_expression_check.py` 补两条：
+
+- `test_all_examples_pass_guard_and_signature`——每条示例都要过守卫与自身指标签名。
+  示例是 few-shot 的范本，模型会照着它写：示范一条非法语句或一条口径漂移的语句，
+  等于把缺陷直接教给模型。新增示例后这条自动覆盖
+- `test_every_metric_has_at_least_five_examples`——每个指标示例数不得低于 5。
+  数量下降意味着覆盖面退化，作为下限断言而非参考值
+
+### 已知边界
+
+- 示例里的时间区间是具体日期（如 `2026-04-01`），配合问句里的相对时间示范
+  「相对时间 → 具体区间」的换算。模型若照抄日期而不重新换算，由 prompt 里的
+  `time_range` 段落与 FR-D-5 的一致性核对器兜底
+- 「未命中任何指标时示例池为空」这一结构限制未在本批处理：`recall()` 的示例池是
+  「命中指标的 examples 并集」，命中为空则池子为空。补通用示例池需要先定存放位置
+  与检索策略，留待确认
+
+
+
+## T43　审计日志
+
+提交：本批统一一个 commit
+
+实施日期：2026-09-23　｜　范围：守卫判定与 SQL 执行的审计通道（前端页面不在范围内）
+
+### 起因
+
+FRD 里有句判断：「留痕算查询记录不算审计（无规则编号、无节点路径）」。核查后确认：被守卫拒绝的候选语句不落 `turns` 也不进日志；`turns` 随 `delete_session` 级联清空；各处的 `logging` 只有 stdout，重启即丢，无法检索。三类记录都没有可查询的落点。
+
+### 改动
+
+新增 `app/audit/`（`events` / `sinks` / `recorder`）、`db/models.py` 的 `AuditLog` 表、`db/repository.py` 的 `AuditRepository` 接口与 `db/audit_repo.py` 实现、`api/audit.py` 三个查询接口；validate 与 execute 两个节点埋点。
+
+六类事件：`sql_guard_block` / `sql_guard_rewrite` / `sql_guard_pass` / `sql_metric_block` / `sql_execute` / `sql_execute_error`。按判定发生在哪一步划分，不按结果好坏划分——改写量与拦截量是两类运维信号，合并后只能翻 detail 才看得出。
+
+接口：`GET /api/audit`（检索，带总数）、`GET /api/audit/summary`（按类型 / 结果 / 规则计数）、`GET /api/audit/export`（CSV / JSON，上限 5000 条）。
+
+配置新增 `AUDIT_ENABLED`（默认 true）；应用库不可写时自动降级为日志输出。
+
+### 一处设计更正
+
+初版给 `session_id` 加 `ForeignKey(..., ondelete="SET NULL")`，测试中写入不存在的会话 id 时 SQLite 抛 `FOREIGN KEY constraint failed`——审计因为业务表没有对应行而丢记录。改为不带外键的普通索引列：删会话不影响审计，且保留原 id 供追溯。审计与业务数据之间不该有引用完整性约束。
+
+### 验证
+
+- `pytest -q`：**509 passed**（+16）
+- `eval/run_eval.py`：十组未通过 **0 条**
+- 端到端一轮落两条记录：`sql_guard_pass` 与 `sql_execute`（rows=7，来源表 orders / order_items）
+
+### 新增测试
+
+`tests/test_audit.py` 16 条，覆盖六类事件落库、sink 抛异常时节点照常返回、关闭时静默、删会话后审计仍在（`turns` 同时被清空作对照）、仓储筛选与汇总、接口的检索 / 导出 / 400 / 409。
+
+### 已知边界
+
+- 对比基准查询与数据时效探针不经 execute 节点、无会话上下文，不进审计
+- 候选重排的守卫判定不重复记，避免同一语句两遍
+- 无用户体系，actor 只到会话粒度；接口无鉴权，部署到共享环境需外层加访问控制
+- 审计表暂无保留期与清理
+
+### 同步更新
+
+`README.md` 与 `backend/README.md` 基线 493 → 509；`.env.example` 补 `AUDIT_ENABLED`。
+
+## T44　对比基准口径修正
+
+提交：本批统一一个 commit
+
+实施日期：2026-09-23　｜　范围：FR-M-1 / FR-M-2 / FR-M-3 实现中的两处口径缺陷
+
+### 起因
+
+T43 把「对比基准查询不进审计」写进已知边界后，回头核查 `app/agent/baselines.py`，发现真正的缺口不是留痕而是两处会产出错误基准值且不报错的缺陷。既有实现 FR-M-1 至 FR-M-3 均已交付、eval baseline 组 6/6 通过，但用例全是自然月窗口（`上个月` / `本月` / `上周`），month 分支的非自然月路径没有覆盖。
+
+### 缺陷一：month 粒度环比窗口错位
+
+`_prior_window` 的 month 分支按整月对齐，其余粒度按等长平移。窗口不是自然月时两条路径不一致：本期 08-15→09-15 的环比给出 07-01→08-01，与本期不相邻，中间 08-01 至 08-15 无人覆盖。
+
+影响是结论方向反转。同一个问句下，修复前偏离 −10.19%（环比取 07-01→08-01），修复后 +8.59%（环比取 07-15→08-15），本期值同为 3,563,928.35。基准值会顺着 baselines 进 findings 与结论一致性校验。
+
+修法：加 `_is_natural_month(start, end)`，窗口恰为自然月时才走月对齐，否则退回等长平移。判定收在函数内部，两条路径口径才统一；自然月窗口的语义不变。
+
+### 缺陷二：无别名聚合取到维度列
+
+`_exec_scalar` 的 `prefer` 缺失时退回「取第一个数值列」。去掉 GROUP BY 后 SELECT 仍带维度列，维度本身是数值（年份、金额档位、渠道 id）时会取到维度值——实测 `SELECT 年份, SUM(金额)` 取到 2026.0，真实成交额为 3,968,513.68。错误值不抛异常。
+
+修法：取值改为三级——别名 → SELECT 中唯一的聚合表达式 → 放弃。新增 `_aggregate_positions` 按位置取值而非按列名（无别名聚合列的结果集键是表达式原文，与 sqlglot 生成的文本未必逐字一致）。第三档不再猜列，多个无别名聚合时返回 None 并记 missing_reasons。
+
+### 验证
+
+- `pytest -q`：**520 passed**（509 → 520，新增 11 条）
+- `eval/run_eval.py`：十组未通过 **0 条**
+- 端到端：非自然月窗口环比 07-15→08-15（偏离 +8.59%）；自然月对照 07-01→08-01（偏离 −12.84%），月对齐语义未变
+
+### 新增测试
+
+`tests/test_baseline.py` 11 条：自然月判定三种形态、非自然月窗口两个期望值、参数化的「任意窗口下环比紧邻且等长」性质断言（4 组）、`_exec_scalar` 四类形态。通用性质断言是对两处缺陷的防线——新增粒度或调阈值时同样受约束。
+
+### 已知边界
+
+对比期查询仍只有 `record_comparison_query()` 的计数，SQL 原文、耗时、失败原因不落盘；规则表 `min_granularity` 一项同时管 mom 与 yoy；周期完整性用系统日期而非数据截止日判定；COUNT 类聚合在对比期无匹配行时返回 0 被当有效基准值，SUM 返回 NULL 判为缺失，两者不一致。四项按确认结果不在本批范围内。
+
+### 同步更新
+
+`README.md` 与 `backend/README.md` 基线 509 → 520。
+
+## T45　异常订阅合成问句缺时间窗
+
+提交：与同上缺失项一并处理（尚未提交）
+
+实施日期：2026-09-29　｜　范围：FR-O-2 / FR-O-5
+
+### 起因
+
+把 `LLM_MOCK` 切到真实模型后，`/api/health` 的 `alert_unhealthy` 转为 true，`alert_consecutive_failures` 达到 4（阈值 3）。`/api/alert/events` 显示 2026-09-29T10:00 周期两条规则均为 `status=error`，原因是「图执行未成功（status=clarify）」。同一份配置在桩实现下长期全绿，包括 eval 的 alert 组。
+
+### 缺陷
+
+`app/agent/alert_eval.py::build_question` 在无维度规则下只返回指标显示名本身，合成问句是「成交总额」——没有时间、没有维度。真实模型按 FR-D 的澄清分支处理：「你说的成交总额是指哪个时间范围？」。`_failure_reason` 据此判为求值失败。
+
+桩实现不受影响的原因写在 `mock_sql.py` 的边界里：桩 SQL 由语义层派生且不带时间谓词，缺了时间条件照样能出语句、能算基准。于是这条路径的错误只有在真实模型下才显形。
+
+连带影响的是偏离度类订阅：即使侥幸过了 route，拿不到时间范围就没有完整本期，`partial_period` 或非完整周期会让 `comparable` 为 false，偏离度仍无法判定——这与 2026-09-22 那两条「对比基准不成立」是同一类成因。
+
+### 修法
+
+在 `build_question` 里给两种情况统一补一个完整的自然周期 `DEFAULT_PERIOD_TEXT = "上个月"`，问句形如「上个月的成交总额」「上个月各商品类目的成交总额」。没有给规则表加时间窗字段：偏移防线以外的配置面会牵动表结构、接口校验与前端表单，先以常量承接，需要按规则配窗口时再扩。
+
+选「上个月」而不是滚动窗口的理由：上一个自然月天然是完整周期，环比、同比都判定 comparable；近 7 天这类滚动窗口在业务数据截止 2026-09-22 时会整体落到数据之后，返回 NULL。
+
+### 验证
+
+- `pytest -q`（`LLM_MOCK=true`）：**546 passed**（544 → 546，新增 2 条）
+- `eval/run_eval.py`：十二组 109 条未通过 **0 条**，alert 组 4 → 5 条
+- 真实模型离线复跑：`_failure_reason` 为空，`status=ok`，`mom.comparable=true`、`deviation=-0.1361`，阈值 5% 判定命中，`hits[0].value = 2,865,757.25`
+
+### 新增测试
+
+`tests/test_alerts.py` 2 条：`test_build_question_carries_default_period`（两种问句形态逐字断言，钉住这次回归）、`test_evaluation_failure_when_slice_baseline_unavailable`（偏离度带维度切片时记 error 而非未命中，这条路径此前无覆盖）。
+
+同组另有两个用例改写：原「无时间限定 → 基准不成立」的失败用例已随修复不成立，其中 `test_evaluation_failure_when_baseline_unavailable` 改为直接注入 `_baseline_deviation` 的返回值专测错误映射，`test_consecutive_failures_counter` 改用「偏离度 + 维度」规则制造连续失败。
+
+### 评测集改动
+
+`eval/cases.yaml` 的 alert 组：`alert-o003` 由期望 error 改为期望 ok（合成问句缺时间是缺陷而非预期行为）；新增 `alert-o005`（偏离度 + 维度 → error），接替担任 FR-O-5 失败分支的代表。
+
+### 已知边界
+
+默认周期对所有规则共用且不可配；月度窗口意味着每小时求值会产生重复事件的记录（`evaluated_at` 每小时一个，数值整月不变）。
+
+### 同步更新
+
+`README.md` 与 `backend/README.md` 的基线数字在 T46.2 收口时一并校齐（T45 当时记为「待更新」，实际工作区为 544 passed / 十二组 109 条——两条用例已随时间推移变红，成因见 T46.1）。
+
+## T46　收口批次（已完成）
+
+实施日期：2026-10-16　｜　范围：T46.1 时间词锚定 / T46.2 收口与基线 / T46.3 数据刷新 / T46.4 真实模型评测
+
+T45 之后积压的四件事合并为同一批次，已全部执行完毕。方案与逐项验收口径见 `docs/设计文档/T46-收口批次-方案.md` 与 `docs/设计文档/T46-收口批次-验收概览.md`。
+
+| 子项 | 结果 |
+|---|---|
+| T46.1 | 时间词换算改按数据截止日；`QueryRepository.data_as_of()` 为单一来源，经 graph 装配注入 retrieve / validate / enrich 三个节点，`/api/health` 与语义层调试接口同源。桩模式 544 passed + 2 failed → **548 passed / 0 failed** |
+| T46.2 | 工作区 61 个文件分 3 个 commit 收口；README / CHANGELOG / 答辩幻灯片 / FRD 完成度核查四处数字校齐；新建 `docs/设计文档/FRD-完成度核查-2026-10-16.md` 与 `已知限制.md` |
+| T46.3 | `seed.py --end-date 2026-10-14` 重造；`data_as_of=2026-10-14`、`is_stale=false`；评测锚点与 cases.yaml 日期字面量同步 |
+| T46.4 | 阻塞：API key 返回 401（invalid_api_key），11 组真实模型评测未跑，记入 `docs/设计文档/已知限制.md` |
+
+### 与方案的两处偏差
+
+1. 方案 A 写的锚点公式是 `min(orders.paid_at_max, refunds.created_at_max)`，实现取 `min(orders.created_at_max, refunds.created_at_max)`：全部 SQL 的时间谓词都写在 `orders.created_at` 上，按 `paid_at` 锚定会在跨月订单上让「上个月」落到查询不到数据的月份；且 `/api/health` 原口径就是 `created_at`，取同一公式才能保证「问出来的区间与 health 报的截止日一致」这条验收。
+2. 方案把 `partial_period` 判定列为已知边界（仍按系统日期），实施时一并接入锚点：不接的话数据月份过后「本月」会被判成完整周期，`base-m002` 当天即变红，属于同一缺陷的另一处显形。

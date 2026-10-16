@@ -11,6 +11,8 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any
 
+from app.audit.events import AuditEvent
+
 
 @dataclass
 class QueryResult:
@@ -52,6 +54,18 @@ class QueryRepository(ABC):
     @abstractmethod
     def count_rows(self, table: str) -> int:
         """统计表行数，供演示前的数据量确认。"""
+
+    @abstractmethod
+    def data_as_of(self) -> dt.date | None:
+        """数据截止日：orders 与 refunds 两表中较早的最大业务日期，截断到日。
+
+        相对时间词（上个月、近 7 天）按它而不是系统日期换算：数据截止
+        2026-09-22 时问「上个月」得到 2026-08，与库里的数据对得上；按系统
+        日期换算会落到没有数据的月份，语句能执行、结果必然是空。两表取较早者
+        是为了「任一张表都没有数据」的月份不被当成可统计区间。某张表为空时
+        忽略它取另一张（与 /api/health 的口径一致）；两张都为空返回 None，
+        调用方退回系统日期。
+        """
 
 
 # --------------------------------------------------------------------------
@@ -290,3 +304,58 @@ class SessionStore(ABC):
     @abstractmethod
     def consecutive_alert_failures(self) -> int:
         """从最近一次求值向前数连续 error 的次数（按求值时刻倒序）。"""
+
+
+# --------------------------------------------------------------------------
+# 审计日志
+#
+# 与 SessionStore 分开成独立接口，而不是往会话接口上继续加方法：审计记录不随
+# 会话删除，也不提供删除与改写方法——一个能删自己记录的审计没有意义。接口上
+# 不出现这些方法，调用方就无从误用。
+# --------------------------------------------------------------------------
+
+class AuditRepository(ABC):
+    """审计事件接口。只写不改，只查不删。"""
+
+    @abstractmethod
+    def record(self, event: AuditEvent) -> int:
+        """写入一条事件，返回自增 id。ts 为空时填落库时刻。"""
+
+    @abstractmethod
+    def search(
+        self,
+        *,
+        event_type: str | None = None,
+        outcome: str | None = None,
+        rule_id: str | None = None,
+        session_id: str | None = None,
+        keyword: str | None = None,
+        since: dt.datetime | None = None,
+        until: dt.datetime | None = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[AuditEvent]:
+        """按条件检索，按时间倒序。keyword 匹配问句、语句与原因。"""
+
+    @abstractmethod
+    def count(
+        self,
+        *,
+        event_type: str | None = None,
+        outcome: str | None = None,
+        rule_id: str | None = None,
+        session_id: str | None = None,
+        keyword: str | None = None,
+        since: dt.datetime | None = None,
+        until: dt.datetime | None = None,
+    ) -> int:
+        """与 search 同条件的总数，供分页。"""
+
+    @abstractmethod
+    def summary(
+        self,
+        *,
+        since: dt.datetime | None = None,
+        until: dt.datetime | None = None,
+    ) -> dict[str, Any]:
+        """按事件类型、结果与规则编号分别计数，用于概览。"""

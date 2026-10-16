@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
+from datetime import date
 from pathlib import Path
 
 import pytest
@@ -36,6 +37,16 @@ def catalog() -> Catalog:
 def guard(catalog: Catalog) -> SqlGuard:
     """用真实语义层构造的守卫。max_rows 与配置一致。"""
     return SqlGuard.from_catalog(catalog, max_rows=get_settings().sql_max_rows)
+
+
+@pytest.fixture(scope="session")
+def data_as_of(business_repo: SqliteQueryRepository) -> date | None:
+    """时间词锚点：库内数据截止日，与生产同一来源。
+
+    相对时间词用例按它换算，不按系统日期——按系统日期换算会在数据陈旧后
+    落到没有数据的月份，这类失败与实现无关，换一天跑就换一个结果。
+    """
+    return business_repo.data_as_of()
 
 
 @pytest.fixture()

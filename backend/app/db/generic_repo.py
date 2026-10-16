@@ -121,3 +121,23 @@ class GenericSqlQueryRepository(QueryRepository):
             raise ValueError(f"非法的表名：{table}")
         with self.engine.connect() as conn:
             return int(conn.execute(text(f"SELECT COUNT(*) FROM {table}")).scalar() or 0)
+
+    def data_as_of(self) -> dt.date | None:
+        # 与 SQLite 实现同一条口径：两表最大日期取较早者，空表产生的 NULL 被
+        # MIN 忽略。方言差异只在驱动返回的类型上，date / datetime / 字符串都要认
+        with self.engine.connect() as conn:
+            value = conn.execute(
+                text(
+                    "SELECT MIN(m) FROM ("
+                    "SELECT MAX(created_at) AS m FROM orders "
+                    "UNION ALL SELECT MAX(created_at) AS m FROM refunds)"
+                )
+            ).scalar()
+        if value is None:
+            return None
+        if isinstance(value, dt.datetime):
+            return value.date()
+        if isinstance(value, dt.date):
+            return value
+        text_value = str(value).strip()
+        return dt.date.fromisoformat(text_value[:10]) if text_value else None

@@ -254,6 +254,21 @@ def _find_aggregate_alias(sql: str) -> str | None:
     return None
 
 
+def _aggregate_positions(sql: str) -> list[int]:
+    """SELECT 列表中聚合表达式的位置下标。
+
+    按位置而不是按列名取值的理由：无别名的聚合列在结果集里的键是表达式
+    原文（如 `SUM(oi.unit_price * oi.quantity)`），与 sqlglot 生成的文本
+    在空格与大小写上未必逐字一致，按名匹配会静默落空。位置由解析树给出，
+    与列名的书写形式无关。
+    """
+    try:
+        tree = sqlglot.parse_one(sql, dialect="sqlite")
+    except sqlglot.errors.ParseError:
+        return []
+    return [i for i, expr in enumerate(tree.expressions) if _contains_aggregate(expr)]
+
+
 def _qualify_time_column(tree: exp.Expression, column: str = "created_at") -> str:
     """给时间列补上主表别名。
 
@@ -351,9 +366,20 @@ def _month_ceil(d: dt.date) -> dt.date:
     return dt.date(d.year, d.month + 1, 1)
 
 
+def _is_natural_month(start: dt.date, end: dt.date) -> bool:
+    """窗口是否恰好是一个自然月（月初到次月月初）。
+
+    月对齐只对自然月窗口成立。粒度推断给出 month 并不代表窗口是自然月：
+    跨度 31 天的 8-15 至 9-15 同样是 month，若按整月对齐会得到 7-01 至
+    8-01——与本期既不紧邻也不等长，中间的 8-01 至 8-15 无人覆盖，偏离度
+    是两个不同区间之比。判定收在这里，两条平移路径的口径才一致。
+    """
+    return start.day == 1 and end == _month_ceil(start)
+
+
 def _prior_window(start: dt.date, end: dt.date, granularity: str) -> tuple[dt.date, dt.date]:
     """当前周期之前的等长周期（mom 用）。"""
-    if granularity == "month":
+    if granularity == "month" and _is_natural_month(start, end):
         # start = 当前月1号，则 mom = 上个月
         if start.month == 1:
             mom_start = dt.date(start.year - 1, 12, 1)
@@ -361,7 +387,8 @@ def _prior_window(start: dt.date, end: dt.date, granularity: str) -> tuple[dt.da
             mom_start = dt.date(start.year, start.month - 1, 1)
         mom_end = _month_ceil(mom_start)
         return mom_start, mom_end
-    # 其它粒度：起点平移 span 天
+    # 其它粒度：起点平移 span 天。非自然月的 month 窗口也走这里，
+    # 结果是紧邻本期的等长周期，与 day / week 分支同源
     span = (end - start).days
     return start - dt.timedelta(days=span), start
 
@@ -390,10 +417,12 @@ def _last_year_window(start: dt.date, end: dt.date) -> tuple[dt.date, dt.date]:
 def _period_completeness(start: dt.date, end: dt.date, today: dt.date) -> dict[str, Any]:
     """返回本周期完整度：complete / partial / future。
 
-    判定依据是周期的自然结束日（左闭右开区间下为 end - 1 天）与数据截止日
-    的关系，而不是窗口跨度：跨度只决定粒度，不决定数据是否收齐。
+    判定依据是周期的自然结束日（左闭右开区间下为 end - 1 天）与锚点的关系，
+    而不是窗口跨度：跨度只决定粒度，不决定数据是否收齐。锚点由调用方传入，
+    生产链路取库内数据截止日（见 enrich 节点的 today 参数）——按系统日期判
+    会在数据陈旧后把「只到 22 日的本月」判成完整周期，环比随之被标注为可比。
 
-    例：窗口 2026-09-01 至 2026-10-01，自然结束日 9-30，today=9-16 → partial。
+    例：窗口 2026-09-01 至 2026-10-01，自然结束日 9-30，锚点 9-22 → partial。
     """
     if start > today:
         return {"state": "future", "label": "周期未开始"}
@@ -416,11 +445,15 @@ def _granularity_rank(granularity: str) -> int:
 # ----------------------------------------------------------------------
 
 def _exec_scalar(repo: QueryRepository, sql: str, prefer: str | None = None) -> float | None:
-    """执行聚合查询，返回标量。失败/空结果返回 None。
+    """执行聚合查询，返回标量。失败/空结果/定位不到聚合列时返回 None。
 
-    prefer 是聚合列的别名。去掉 GROUP BY 之后同一条语句会带上维度列，
-    「取第一个数值列」在维度本身是数值（年份、金额档位）时会取错列，
-    因此有别名时优先按别名取。
+    去掉 GROUP BY 之后同一条语句仍带着维度列，取值必须落到聚合列上。
+    三级依次尝试：别名 → SELECT 中唯一的聚合表达式 → 放弃。
+
+    此前最后一档是「取第一个数值列」，维度本身是数值时会取到维度值：
+    `SELECT 年份, SUM(金额)` 取到 2026 而不是成交额。这个数不报错，会顺着
+    baselines 进异常标记与结论一致性校验。宁可判为无法聚合也不猜——
+    猜错的基准比缺失更危险，使用者会拿它当结论用。
     """
     try:
         result = repo.execute_readonly(sql)
@@ -432,9 +465,15 @@ def _exec_scalar(repo: QueryRepository, sql: str, prefer: str | None = None) -> 
     first = result.rows[0]
     if prefer and prefer in first and isinstance(first[prefer], (int, float)):
         return float(first[prefer])
-    for v in first.values():
-        if isinstance(v, (int, float)):
-            return float(v)
+
+    values = list(first.values())
+    positions = _aggregate_positions(sql)
+    if len(positions) == 1 and positions[0] < len(values):
+        value = values[positions[0]]
+        if isinstance(value, (int, float)):
+            return float(value)
+
+    logger.info("基准查询定位不到聚合列，按缺失处理：%s", sql[:200])
     return None
 
 

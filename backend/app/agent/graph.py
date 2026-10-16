@@ -2,8 +2,10 @@
 
 图的结构：
 
-    route ──┬─ chitchat ─► respond ─► END
-            ├─ clarify  ─► clarify ─► END
+    route ──┬─ chitchat      ─► respond       ─► END
+            ├─ clarify       ─► clarify       ─► END
+            ├─ out_of_scope  ─► out_of_scope  ─► END
+            ├─ attribution   ─► attribution   ─► END
             └─ query ─► retrieve ─► generate ─► validate ─┬─ 通过 ─► execute
                                                           └─ 失败 ─► fix ─┐
                                               execute ─┬─ 成功 ─► visualize ─► summarize ─► END
@@ -21,6 +23,7 @@ retry_count 在 validate 与 execute 之间共享，由 fix 节点递增，上�
 
 from __future__ import annotations
 
+import datetime as dt
 import logging
 from functools import partial
 from typing import Any, Callable
@@ -38,6 +41,7 @@ from app.agent.nodes.summarize import summarize_node
 from app.agent.nodes.validate import validate_node
 from app.agent.nodes.visualize import visualize_node
 from app.agent.state import ENTRY_NODE, AgentState, new_stage
+from app.audit.recorder import AuditRecorder
 from app.chart.builder import build_chart
 from app.db.guard import (
     SqlGuard,
@@ -55,9 +59,10 @@ logger = logging.getLogger(__name__)
 # ----------------------------------------------------------------------
 # 终态节点
 #
-# respond / clarify / give_up 三个节点不调用模型、不访问数据库，只做固定文案
-# 组装，因此直接写在图定义里。为三个没有依赖的三行函数各开一个文件，会让
-# nodes/ 目录的「一文件一职责」变成「一文件一空壳」，反而看不出真正的结构。
+# respond / clarify / give_up / out_of_scope / attribution 五个节点不调用模型、
+# 不访问数据库，只做固定文案组装，因此直接写在图定义里。为五个没有依赖的
+# 三行函数各开一个文件，会让 nodes/ 目录的「一文件一职责」变成「一文件一空壳」，
+# 反而看不出真正的结构。
 # ----------------------------------------------------------------------
 
 CHITCHAT_REPLY = (
@@ -124,6 +129,95 @@ def give_up_node(state: AgentState) -> dict[str, Any]:
     }
 
 
+# 超出范围与归因两类问题的固定文案。
+#
+# 它们的共同点是「不进取数链路」：一旦判错，下游照旧会生成一条语法正确、
+# 能执行、有图表的 SQL，用户拿到一个与自己问题无关的数字，且全程无报错。
+# 因此这两句文案必须说清「为什么不给数」，而不只是说「答不了」。
+OUT_OF_SCOPE_EXAMPLES: tuple[str, ...] = (
+    "上个季度华东区各品类的成交总额",
+    "各渠道近三个月的订单量",
+    "今年以来各区域的退款率",
+)
+
+ATTRIBUTION_LEAD = (
+    "这类问题一次查询答不出来：聚合只能给出结果，给不出原因。要判断变化是谁带"
+    "来的，得先把它拆开对比。下面是同一件事的几种问法，先从对比幅度看起，再看"
+    "变化集中在哪个维度，最后区分是量的问题还是价的问题。"
+)
+
+
+def out_of_scope_node(state: AgentState) -> dict[str, Any]:
+    """域外问题的终态。
+
+    与 give_up 的区别：give_up 是「想答但答不出来」（语句写错、数据没有），
+    这里是「不该答」——预测未来、查库里没有的实体、或根本不是取数任务。
+    把两者混为一谈会让用户误以为是系统能力不足，其实是问题不在这个数据集上。
+    """
+    question = (state.get("original_question") or state.get("question") or "").strip()
+    reason = (state.get("intent_reason") or "").strip()
+
+    parts = [f"「{question}」不在我能回答的范围内。" if question else "这个问题不在我能回答的范围内。"]
+    if reason:
+        parts += ["", f"判定依据：{reason}"]
+    parts += ["", "我能做的是在这个电商经营数据集上做统计查询，例如："]
+    parts += [f"- {e}" for e in OUT_OF_SCOPE_EXAMPLES]
+    answer = "\n".join(parts)
+
+    return {
+        "status": "out_of_scope",
+        "answer": answer,
+        "messages": [AIMessage(content=answer)],
+        "stages": [new_stage("out_of_scope", "超范围", "不生成查询，已说明可答范围")],
+    }
+
+
+def _attribution_suggestions(state: AgentState) -> list[str]:
+    """按已识别的槽位拼替代问法。
+
+    槽位来自 route，桩模式下由关键词填充、真实模式下由模型填充，两边都不保证
+    齐全，因此每一项都留了兜底措辞——拿不到指标时写「成交额」，拿不到维度时
+    写「区域」，拿不到时间时写「最近一个月」。
+    """
+    slots = state.get("slots") or {}
+    metrics = [str(m).strip() for m in (slots.get("metrics") or []) if str(m).strip()]
+    metric = metrics[0] if metrics else "成交额"
+    dims = [str(d).strip() for d in (slots.get("dimensions") or []) if str(d).strip()]
+    dim = dims[0] if dims else "区域"
+    period = str(slots.get("time_range") or "").strip() or "最近一个月"
+
+    return [
+        f"{period}与上一个同长度周期的{metric}，看变化幅度有多大",
+        f"{period}各{dim}的{metric}及环比，看变化集中在哪一块",
+        f"{period}订单量、客单价、退款率分别的变化，区分是量的问题还是价的问题",
+    ]
+
+
+def attribution_node(state: AgentState) -> dict[str, Any]:
+    """归因问题的终态。
+
+    不给数字是刻意的：用户问「为什么下降」，一条聚合查询能给出的只有下降了多少，
+    而这个数字用户往往已经知道。给出它等于把一个解释型问题当成取数问题回答，
+    是答非所问最典型的一种形态。
+
+    替代问法按槽位拼，而不是给一段通用建议——用户要的是「我接下来该问什么」。
+    """
+    question = (state.get("original_question") or state.get("question") or "").strip()
+    parts = [f"「{question}」" if question else "这个问题"]
+    parts[0] += "问的是原因，我先说明能怎么查，不直接给一个数字。"
+    parts += ["", ATTRIBUTION_LEAD, ""]
+    parts += [f"{i}. {s}" for i, s in enumerate(_attribution_suggestions(state), start=1)]
+    parts += ["", "跑完上面任意一条，把结果里变化最大的那一块告诉我，可以继续往下拆。"]
+    answer = "\n".join(parts)
+
+    return {
+        "status": "attribution",
+        "answer": answer,
+        "messages": [AIMessage(content=answer)],
+        "stages": [new_stage("attribution", "归因", "不生成查询，已给出拆解问法")],
+    }
+
+
 # ----------------------------------------------------------------------
 # 条件路由
 # ----------------------------------------------------------------------
@@ -134,6 +228,12 @@ def _after_route(state: AgentState) -> str:
         return "respond"
     if intent == "clarify":
         return "clarify"
+    # 两类不进取数链路的终态。映射必须与 intent 字面量同名，否则终态节点
+    # 跑不到，而 retrieve/generate 会照旧生成一条与问题无关的语句。
+    if intent == "out_of_scope":
+        return "out_of_scope"
+    if intent == "attribution":
+        return "attribution"
     return "retrieve"
 
 
@@ -185,11 +285,19 @@ def build_graph(
     history_window: int = 6,
     max_retry: int = 3,
     max_empty: int = 1,
+    # 审计记录器。传 None 时节点退回进程内单例（get_recorder），
+    # 未装配容器时那是 NullSink，审计静默，不影响链路执行。
+    audit: AuditRecorder | None = None,
+    # 时间词锚点：库内数据截止日（QueryRepository.data_as_of）。retrieve 与
+    # validate 两个节点靠它把「上个月」这类相对说法换算成日期区间——按系统
+    # 日期换算会在数据陈旧时落到没有数据的月份，语句能执行、结果必然是空。
+    # 传 None 时两节点退回系统日期（单测与旧装配路径的行为不变）。
+    data_as_of: dt.date | None = None,
 ) -> Any:
     graph = StateGraph(AgentState)
 
     graph.add_node("route", partial(route_node, gateway=gateway, history_window=history_window))
-    graph.add_node("retrieve", partial(retrieve_node, catalog=catalog))
+    graph.add_node("retrieve", partial(retrieve_node, catalog=catalog, today=data_as_of))
     graph.add_node(
         "generate",
         partial(
@@ -200,14 +308,23 @@ def build_graph(
             catalog=catalog,
         ),
     )
-    graph.add_node("validate", partial(validate_node, guard=guard))
-    graph.add_node("execute", partial(execute_node, repo=repo))
-    graph.add_node("enrich", partial(enrich_node, repo=repo, catalog=catalog))
+    graph.add_node(
+        "validate",
+        partial(
+            validate_node, guard=guard, catalog=catalog, audit=audit, today=data_as_of
+        ),
+    )
+    graph.add_node("execute", partial(execute_node, repo=repo, audit=audit))
+    graph.add_node(
+        "enrich", partial(enrich_node, repo=repo, catalog=catalog, today=data_as_of)
+    )
     graph.add_node("fix", partial(fix_node, gateway=gateway))
     graph.add_node("visualize", partial(visualize_node, gateway=gateway, repo=repo))
     graph.add_node("summarize", partial(summarize_node, gateway=gateway))
     graph.add_node("respond", respond_node)
     graph.add_node("clarify", clarify_node)
+    graph.add_node("out_of_scope", out_of_scope_node)
+    graph.add_node("attribution", attribution_node)
     graph.add_node("give_up", give_up_node)
 
     # 入口节点名取自 state.ENTRY_NODE：进度归约靠它判断新一轮是否开始
@@ -216,7 +333,13 @@ def build_graph(
     graph.add_conditional_edges(
         "route",
         _after_route,
-        {"retrieve": "retrieve", "respond": "respond", "clarify": "clarify"},
+        {
+            "retrieve": "retrieve",
+            "respond": "respond",
+            "clarify": "clarify",
+            "out_of_scope": "out_of_scope",
+            "attribution": "attribution",
+        },
     )
     graph.add_edge("retrieve", "generate")
     graph.add_conditional_edges(
@@ -245,6 +368,8 @@ def build_graph(
     graph.add_edge("summarize", END)
     graph.add_edge("respond", END)
     graph.add_edge("clarify", END)
+    graph.add_edge("out_of_scope", END)
+    graph.add_edge("attribution", END)
     graph.add_edge("give_up", END)
 
     return graph.compile(checkpointer=checkpointer) if checkpointer else graph.compile()
@@ -358,6 +483,8 @@ def summarize_result(state: dict[str, Any]) -> dict[str, Any]:
         # —— FR-B-3 结论数字待查 / FR-D-5 时间区间一致性 ——
         "number_checks": list(state.get("number_checks") or []),
         "time_range_consistent": state.get("time_range_consistent"),
+        # —— 槽位覆盖：语句没落实的槽位，前端据此提示可能的偏差 ——
+        "slot_gaps": list(state.get("slot_gaps") or []),
         # —— FR-A-5 结构化槽位 ——
         "slots": state.get("slots") or {},
         # —— FR-H-3 原话与改写句 ——
@@ -375,6 +502,8 @@ __all__ = [
     "summarize_result",
     "respond_node",
     "clarify_node",
+    "out_of_scope_node",
+    "attribution_node",
     "give_up_node",
     "build_chart",
 ]

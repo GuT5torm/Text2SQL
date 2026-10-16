@@ -52,8 +52,12 @@ def debug_recall(
     with_context: bool = Query(default=False, description="是否一并返回渲染后的 prompt 段落"),
     container: Container = Depends(get_container),
 ) -> dict[str, Any]:
-    """调试接口：不调用模型，直接看到规则召回命中了什么。"""
-    hit = recall(q, container.catalog)
+    """调试接口：不调用模型，直接看到规则召回命中了什么。
+
+    时间词按库内数据截止日换算，与 retrieve 节点同一锚点——调试接口按系统
+    日期换算的话，这里看到的区间会和问答里实际用的区间对不上。
+    """
+    hit = recall(q, container.catalog, container.repo.data_as_of())
     payload: dict[str, Any] = {
         "question": q,
         "metrics": [m["name"] for m in hit.metrics],

@@ -77,19 +77,20 @@ uvicorn app.main:app --reload --port 8000
 
 ```bash
 python tests/smoke.py                       # 端到端冒烟，不依赖密钥，也不需要服务已启动
-python -m pytest tests/ -q                  # 单元测试，122 条，约 4 秒
-python eval/run_eval.py                     # 评测集，50 条，约 20 秒
+python -m pytest tests/ -q                  # 单元测试，548 条，约 30 秒
+python eval/run_eval.py                     # 评测集，十二组 109 条，约 30 秒
 curl http://127.0.0.1:8000/api/health       # PowerShell 下请用 (Invoke-WebRequest ...).Content
 ```
 
-前两项回答「能不能跑」，第三项回答「跑得准不准」。`eval/run_eval.py` 产出三项互不
-替代的指标：口径召回准确率、端到端可执行率、危险语句拦截率，详见 `eval/README.md`。
-报告写进 `eval/report.json`，不入库。
+前两项回答「能不能跑」，第三项回答「跑得准不准」。`eval/run_eval.py` 产出多项互不
+替代的指标：口径召回准确率、端到端可执行率、危险语句拦截率、来源与时效、对比基准、
+下钻加深一层、结论可回溯与脱敏零误报、异常订阅三态，以及多轮改写与窗口函数用例，
+分组口径详见 `eval/README.md`。报告写进 `eval/report.json`，不入库。
 
 冒烟脚本用 FastAPI 的 TestClient 在进程内走完整链路：健康检查 → 语义层一致性 → 口径召回 → 建会话 → 三轮问答。
 退出码 0 表示全部通过，非 0 时逐条打印失败原因。
 
-单元测试分五组，与分层一一对应：
+单元测试按分层组织，与 `app/` 的模块划分对应：
 
 | 文件                    | 覆盖对象                                                        |
 | --------------------- | ----------------------------------------------------------- |
@@ -98,6 +99,12 @@ curl http://127.0.0.1:8000/api/health       # PowerShell 下请用 (Invoke-WebRe
 | `test_semantic.py`    | 三份 YAML 的一致性校验、相对时间换算的周期边界、规则召回、上下文渲染                        |
 | `test_api.py`         | health、会话全生命周期、语义层调试接口、两轮问答的进度与落库、SSE 事件序列                    |
 | `test_layering.py`    | 三条分层硬约束的可执行检查：节点不建连、语义层是纯函数、源码无密钥字面量                        |
+
+其余文件按功能域划分：告警订阅 `test_alerts.py`、对比基准 `test_baseline.py`、结论核对
+`test_consistency.py`、结果脱敏 `test_masking.py`、下钻与异常标记 `test_drilldown.py` 与
+`test_findings.py`、空结果回灌 `test_empty_retry.py`、维度口径提示 `test_dimension_check.py`、
+反馈与分享 `test_feedback.py` 与 `test_share.py`、退款计数粒度 `test_refund_grain.py`、
+评测集自检 `test_eval.py`，`test_batch3.py` 为批次验收用例合集。
 
 跑测试需要业务库存在（未造数时依赖业务库的用例会跳过而不是失败）。应用库由夹具指向临时目录，不会写入 `data/app.db`。
 接入真实模型后，依赖桩实现的链路用例会自动跳过。
@@ -111,9 +118,24 @@ curl http://127.0.0.1:8000/api/health       # PowerShell 下请用 (Invoke-WebRe
   "model": "qwen-plus",
   "checkpointer": "memory",
   "metrics": 7,
-  "tables": 6
+  "tables": 6,
+  "data_as_of": "2026-10-14",
+  "alert_rules": 0,
+  "alert_last_eval_at": null,
+  "alert_unhealthy": false,
+  "alert_unread": 0
 }
 ```
+
+`checkpointer` 是**实际生效**的模式：配置里写 `sqlite` 但缺少依赖时会退回 `memory`。
+`alert_last_eval_at` 长期为 `null` 说明异常订阅的外部计划任务没有配置，详见项目根目录
+`README.md` 第十节。
+
+`data_as_of` 是数据截止日（订单与退款两表中较早的最大 `created_at`），也是问答里的
+时间词锚点：「上个月」「近7天」这类相对说法按它换算，不按系统日期。因此这里报出的
+日期就是问「上个月」时实际统计的月份依据；`/api/semantic/recall?q=上个月各区域销售额`
+可以直接看到换算结果。数据截止日长期不动时区间会滞后，重新造数即可推进，命令见
+`data/seed.py --help`。
 
 `llm_mock` 为 true 表示当前是桩实现。桩模式下 `generate` 节点按问题关键词选择预置 SQL，
 可以验证「生成 → 校验 → 执行 → 出图 → 结论」的链路是否通畅，但不代表模型的真实生成能力。
@@ -150,7 +172,10 @@ backend/
 
 ## 五、常用配置项
 
-完整清单见 `.env.example`，下表是常改的几项。
+完整清单见 `.env.example`，下表是常改的几项。表中「默认值」取 `.env.example` 的取值；
+`app/config.py` 中少数字段的代码默认值与它不同（如 `CHECKPOINTER` 代码默认 `sqlite`、
+`LLM_MOCK` 代码默认 `false`），pydantic 的 BaseSettings 里 `.env` 优先级更高，因此
+**以 `.env` 为准**。核对生效值请查 `/api/health`。
 
 | 变量               | 默认值                                                     | 说明                                              |
 | ---------------- | ------------------------------------------------------- | ----------------------------------------------- |

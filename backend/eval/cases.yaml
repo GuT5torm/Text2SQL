@@ -35,6 +35,22 @@
 #                  落地后的同构约束预留，暂不在 case 中使用）
 #   order_by       期望的排序方向（占位字段名，同上）
 #   top_n          期望的 TopN 阈值（占位字段名，同上）
+#   metric_signature
+#                  期望 SQL 的聚合表达式满足这些指标的口径签名，取值是指标 name
+#                  列表，如 [gross_profit]。签名定义在
+#                  backend/app/semantic/metrics.yaml 的 expression_signature，
+#                  与运行时 validate 节点共用同一份，口径知识只有这一处来源。
+#
+#                  这一维补的是既有断言的盲区：status / min_rows / chart_type
+#                  只能证明「跑出了结果」，dimensions / must_join 只能证明
+#                  「用了对的表与列」，都不能证明「算的是对的量」。问题问毛利
+#                  而语句算成交额时，上述断言全部成立——语句能执行、结果有数据、
+#                  图也画得出，用户拿到的却是错的数。
+#
+#                  与 sql_contains 的分工：sql_contains 是文本子串匹配，写一个
+#                  [cost_price] 也能拦住同样的错误，但它读不出意图，后人在用例里
+#                  看到它只会以为在断言「字段存在」。metric_signature 的期望值
+#                  来自语义层，改指标口径时用例无需跟着动。
 #
 # safety 组：
 #   inject_sql     绕过模型直接注入的语句，用于验证守卫是最后一道防线而非模型自觉
@@ -59,9 +75,10 @@ version: 1
 
 meta:
   name: Text2SQL 电商数据分析 Agent 评测集
-  # 时间类断言依赖「今天」是谁。固定为编写日期，跑评测时用 --today 覆盖。
-  reference_today: "2026-09-15"
-  reference_weekday: 周二
+  # 时间类断言依赖「今天」是谁。跑评测时默认取库内 data_as_of（与生产同一
+  # 锚点），下面各条的日期字面量随它同步改；库取不到时才退回这里的编写日期。
+  reference_today: "2026-10-14"
+  reference_weekday: 周三
   note: >
     本评测集在桩实现模式下编写和校准。recall 组不经过模型，结论可直接引用；
     pipeline 与 safety 组的 SQL 来自预置模板或本文件显式注入，
@@ -78,7 +95,7 @@ groups:
         expect:
           metrics: [gmv]
           dimensions: []
-          time_range: {label: 今天, start: "2026-09-15", end: "2026-09-16"}
+          time_range: {label: 今天, start: "2026-10-14", end: "2026-10-15"}
 
       - id: gmv-p002
         question: 上个月各区域的销售额
@@ -86,7 +103,7 @@ groups:
         expect:
           metrics: [gmv]
           dimensions: [region]
-          time_range: {label: 上个月, start: "2026-08-01", end: "2026-09-01"}
+          time_range: {label: 上个月, start: "2026-09-01", end: "2026-10-01"}
 
       - id: gmv-p003
         question: 上个季度华东区各品类的成交总额
@@ -94,7 +111,7 @@ groups:
         expect:
           metrics: [gmv]
           dimensions: [category_name, region]
-          time_range: {label: 上个季度, start: "2026-04-01", end: "2026-07-01"}
+          time_range: {label: 上个季度, start: "2026-07-01", end: "2026-10-01"}
 
       - id: gmv-p004
         question: 近半年每月GMV走势
@@ -102,7 +119,7 @@ groups:
         expect:
           metrics: [gmv]
           dimensions: [order_month]
-          time_range: {label: 近半年, start: "2026-04-01", end: "2026-09-16"}
+          time_range: {label: 近半年, start: "2026-05-01", end: "2026-10-15"}
 
       - id: gmv-s001
         question: 本月流水按渠道拆一下
@@ -110,7 +127,7 @@ groups:
         expect:
           metrics: [gmv]
           dimensions: [channel]
-          time_range: {label: 本月, start: "2026-09-01", end: "2026-10-01"}
+          time_range: {label: 本月, start: "2026-10-01", end: "2026-11-01"}
 
       - id: gmv-s002
         question: 今年各地区的业绩
@@ -126,7 +143,7 @@ groups:
         expect:
           metrics: [gmv]
           dimensions: [order_date]
-          time_range: {label: 近7天, start: "2026-09-09", end: "2026-09-16"}
+          time_range: {label: 近7天, start: "2026-10-08", end: "2026-10-15"}
 
       - id: gmv-s004
         question: 江浙沪上个月卖了多少钱
@@ -134,7 +151,7 @@ groups:
         expect:
           metrics: [gmv]
           dimensions: [region]
-          time_range: {label: 上个月, start: "2026-08-01", end: "2026-09-01"}
+          time_range: {label: 上个月, start: "2026-09-01", end: "2026-10-01"}
           value_hints: ["华东"]
 
       - id: gmv-s005
@@ -143,7 +160,7 @@ groups:
         expect:
           metrics: [gmv]
           dimensions: []
-          time_range: {label: 上个月, start: "2026-08-01", end: "2026-09-01"}
+          time_range: {label: 上个月, start: "2026-09-01", end: "2026-10-01"}
 
       # —— 销量 ——
       - id: sv-p001
@@ -152,7 +169,7 @@ groups:
         expect:
           metrics: [sales_volume]
           dimensions: [order_month]
-          time_range: {label: 近三个月, start: "2026-07-01", end: "2026-09-16"}
+          time_range: {label: 近三个月, start: "2026-08-01", end: "2026-10-15"}
 
       - id: sv-p002
         question: 各品牌的销量排名
@@ -167,7 +184,7 @@ groups:
         expect:
           metrics: [sales_volume]
           dimensions: []
-          time_range: {label: 昨天, start: "2026-09-14", end: "2026-09-15"}
+          time_range: {label: 昨天, start: "2026-10-13", end: "2026-10-14"}
 
       # —— 订单量 ——
       - id: oc-p001
@@ -176,7 +193,7 @@ groups:
         expect:
           metrics: [order_count]
           dimensions: [channel]
-          time_range: {label: 上周, start: "2026-09-07", end: "2026-09-14"}
+          time_range: {label: 上周, start: "2026-10-05", end: "2026-10-12"}
 
       - id: oc-p002
         question: 各城市的订单量
@@ -199,7 +216,7 @@ groups:
         expect:
           metrics: [aov]
           dimensions: []
-          time_range: {label: 上个月, start: "2026-08-01", end: "2026-09-01"}
+          time_range: {label: 上个月, start: "2026-09-01", end: "2026-10-01"}
 
       - id: aov-p002
         question: 各会员等级的客单价
@@ -214,7 +231,7 @@ groups:
         expect:
           metrics: [aov]
           dimensions: [order_month]
-          time_range: {label: 近半年, start: "2026-04-01", end: "2026-09-16"}
+          time_range: {label: 近半年, start: "2026-05-01", end: "2026-10-15"}
 
       # —— 退款率 ——
       - id: rr-p001
@@ -247,7 +264,7 @@ groups:
         expect:
           metrics: [paying_users]
           dimensions: []
-          time_range: {label: 近7天, start: "2026-09-09", end: "2026-09-16"}
+          time_range: {label: 近7天, start: "2026-10-08", end: "2026-10-15"}
 
       # —— 毛利 ——
       - id: gp-p001
@@ -264,7 +281,7 @@ groups:
         expect:
           metrics: [gross_profit]
           dimensions: [brand]
-          time_range: {label: 上季度, start: "2026-04-01", end: "2026-07-01"}
+          time_range: {label: 上季度, start: "2026-07-01", end: "2026-10-01"}
 
       - id: gp-s002
         question: 下半年每个月的利润大概是多少
@@ -277,11 +294,11 @@ groups:
       # —— 时间边界专项 ——
       - id: time-p001
         question: 本周卖了多少钱
-        intent: 周从周一起算，2026-09-15 是周二
+        intent: 周从周一起算，2026-10-14 是周三
         expect:
           metrics: [gmv]
           dimensions: []
-          time_range: {label: 本周, start: "2026-09-14", end: "2026-09-21"}
+          time_range: {label: 本周, start: "2026-10-12", end: "2026-10-19"}
 
       - id: time-p002
         question: 去年同期的成交总额
@@ -297,7 +314,7 @@ groups:
         expect:
           metrics: [gmv]
           dimensions: [order_date]
-          time_range: {label: 近30天, start: "2026-08-17", end: "2026-09-16"}
+          time_range: {label: 近30天, start: "2026-09-15", end: "2026-10-15"}
 
       # —— 多指标与复合提问 ——
       - id: mix-p001
@@ -306,7 +323,7 @@ groups:
         expect:
           metrics: [gmv, sales_volume, order_count]
           dimensions: [region]
-          time_range: {label: 上个月, start: "2026-08-01", end: "2026-09-01"}
+          time_range: {label: 上个月, start: "2026-09-01", end: "2026-10-01"}
 
       - id: mix-p002
         question: 本周和上周的销售额对比
@@ -360,14 +377,68 @@ groups:
       - id: reason-p005
         question: 发错货和买家拒收的退款分别有多少
         intent: 两个原因同时出现时维度只召回一次，两条取值提示都要有。
-                不能写成「分别退了多少」——那句会被近似匹配到销量与毛利，
-                而这两个指标没有声明 refund_reason，维度会被「指标声明过」
-                这一步过滤掉
+                此前这里还写着「不能写成分别退了多少」，那是近似兜底把「退了多少」
+                误匹配到销量与毛利时的规避写法；兜底收紧并登记退款说法后该限制
+                已不成立，保留本条是为了守住「取值提示不因同维度合并而丢失」
         expect:
           dimensions: [refund_reason]
           value_hints:
             - "refunds.reason = '发错货'"
             - "refunds.reason = '买家拒收'"
+
+      # —— 说法覆盖 ——
+      # 这一组是 2026-09-29 诊断出来的空洞：此前这些说法要么整句零命中，
+      # 要么被近似兜底误匹配到字形相近的指标。断言写的是指标集合精确相等，
+      # 因此多召回一个指标同样判失败——「退了多少」此前召回的正是销量与毛利。
+      - id: wording-p001
+        question: 上个月生意怎么样
+        intent: 泛词「生意」登记为成交总额，避免整句零命中后凭常识编列名
+        expect:
+          metrics: [gmv]
+
+      - id: wording-p002
+        question: 近7天经营情况
+        intent: 同上，另一个没有唯一指向的泛词
+        expect:
+          metrics: [gmv]
+
+      - id: wording-p003
+        question: 上个月赚钱能力怎么样
+        intent: 赚钱能力落在毛利，不是成交总额
+        expect:
+          metrics: [gross_profit]
+
+      - id: wording-p004
+        question: 上个月平均每单多少钱
+        intent: 客单价的口语说法，此前整句零命中
+        expect:
+          metrics: [aov]
+
+      - id: wording-p005
+        question: 上个月一单多少钱
+        intent: 客单价的另一种口语说法
+        expect:
+          metrics: [aov]
+
+      - id: wording-p006
+        question: 上个月退了多少
+        intent: 近似兜底误召回的原型用例。收紧前这句命中销量与毛利（各 0.667 打平），
+                退款率反而是 0；收紧后要求最优候选显著高于次优，并登记退款说法
+        expect:
+          metrics: [refund_rate]
+
+      - id: wording-p007
+        question: 上个月退单量
+        intent: 只登记「退单」时「单量」会作为订单量同义词同分命中且排在前面，
+                必须整词登记「退单量」才能压住
+        expect:
+          metrics: [refund_rate]
+
+      - id: wording-p008
+        question: 上个月下单量
+        intent: 与上一条成对，守住「单量」归订单量不被退款说法抢走
+        expect:
+          metrics: [order_count]
 
   pipeline:
     description: 端到端链路。跑完整张图，看能否产出结果。
@@ -383,6 +454,7 @@ groups:
           min_rows: 1
           chart_type: bar
           dimension_caveat: false
+          metric_signature: [gmv]
 
       - id: flow-p002
         question: 近半年每月销售额走势
@@ -391,14 +463,20 @@ groups:
           status: ok
           min_rows: 1
           chart_type: line
+          metric_signature: [gmv]
 
       - id: flow-p003
         question: 各品类今年的毛利
-        intent: 品类下钻
+        intent: >-
+          品类下钻。口径断言是这条的要害：加断言之前，语句算的是成交额、
+          caveats 挂的却是毛利口径，status / min_rows / chart_type 三条全部
+          成立，于是「问毛利答成交额」被记为通过。这条的通过与否直接反映
+          口径断言的收益。
         expect:
           status: ok
           min_rows: 1
           chart_type: bar
+          metric_signature: [gross_profit]
 
       - id: flow-p004
         question: 各渠道销售额占比
@@ -407,6 +485,7 @@ groups:
           status: ok
           min_rows: 1
           chart_type: pie
+          metric_signature: [gmv]
 
       - id: flow-p005
         question: 今年以来各区域的退款率
@@ -415,6 +494,7 @@ groups:
           status: ok
           min_rows: 1
           chart_type: bar
+          metric_signature: [refund_rate]
 
       - id: flow-p006
         question: 近7天每天的成交总额
@@ -428,6 +508,7 @@ groups:
           # 断言按天分组的关键是先 date() 截断，而不是出现某个标识名。
           # 维度本身的等价判定由 dimensions 处理（见 run_eval 的 expression 解析）。
           sql_contains: ["date("]
+          metric_signature: [gmv]
 
       - id: flow-p007
         question: 上周各城市的订单量
@@ -440,6 +521,7 @@ groups:
           must_join: [users]
           sql_contains: [users]
           dimension_caveat: false
+          metric_signature: [order_count]
 
       - id: flow-p008
         question: 上个月各会员等级的客单价
@@ -452,6 +534,7 @@ groups:
           # 同 p006：断言落在物理列名 level 上。user_level 是语义层内部标识，
           # 模型不可能知道这个名字，拿它做字面量断言只会产生假失败。
           sql_contains: [level]
+          metric_signature: [aov]
 
       - id: flow-p009
         question: 上个月各种支付方式的下单人数
@@ -459,11 +542,16 @@ groups:
         # sql_contains: [orders] 属于弱断言：只要提到 orders 就通过，
         # 哪怕是把支付方式错落成 channel，这条也会判过。真正要验的是
         # 系统有没有把「本库无此维度」说破——dimension_caveat 承担这个职责。
+        #
+        # metric_signature 补的是另一半：这条问的是下单人数，加断言之前
+        # 语句算的是成交额，而 sql_contains 与 dimension_caveat 都不看度量，
+        # 于是同样被判为通过。
         expect:
           status: ok
           min_rows: 1
           sql_contains: [orders]
           dimension_caveat: true
+          metric_signature: [paying_users]
 
       - id: flow-p010
         question: 你好呀
@@ -641,7 +729,7 @@ groups:
       - id: base-m002
         question: 本月各区域的成交总额
         intent: >
-          FR-M-2 不完整周期：本月只到 13 日，环比必须给出值供标注，但
+          FR-M-2 不完整周期：本月按数据截止日只走到 14 日，环比必须给出值供标注，但
           comparable 为 false 且 deviation 为空，结论侧拿不到可以写进
           「较上月下降 X%」的数字。
         expect:
@@ -888,7 +976,7 @@ groups:
           idempotent: true
 
       - id: alert-o003
-        question: 规则：成交总额偏离度超过 5%（整体、无时间限定）
+        question: 规则：成交总额偏离度超过 5%（整体、无维度）
         rule:
           metric: gmv
           dimensions: []
@@ -896,10 +984,11 @@ groups:
           threshold: 5
           severity: attention
         intent: >-
-          FR-O-5 失败路径：问句未限定时间范围，环比 / 同比基准不成立，
-          偏离度无法求值，必须记 status=error 而不是「未命中」。
+          FR-O-2 整体偏离度路径：规则不带时间窗，合成问句必须自己补一个完整
+          周期，否则 route 判为 clarify 求值直接失败。这条既是偏离度可求值的
+          正向用例，也是「合成问句缺时间受限谓词」这一回归缺陷的防线。
         expect:
-          eval_status: error
+          eval_status: ok
           idempotent: true
 
       - id: alert-o004
@@ -916,6 +1005,23 @@ groups:
         expect:
           eval_status: ok
           hit: false
+          idempotent: true
+
+      - id: alert-o005
+        question: 规则：各销售大区的成交总额偏离度超过 5%
+        rule:
+          metric: gmv
+          dimensions: [region]
+          comparison: deviation
+          threshold: 5
+          severity: attention
+        intent: >-
+          FR-O-5 失败路径：分组结果没有逐切片对比基准，偏离度无法判定。这类
+          「口径不成立」必须记 status=error，绝不能退化成「未命中」。补时间窗
+          之后原先那条「无时间限定」的失败用例已不成立，由这一条接替担任失败
+          分支的代表。
+        expect:
+          eval_status: error
           idempotent: true
 
   # ------------------------------------------------------------------
@@ -1027,3 +1133,123 @@ groups:
           status: ok
           min_rows: 1
           sql_contains: ["WITH"]
+
+  outofscope:
+    description: >-
+      答非所问的两类终态。域外问题（预测未来、库里没有的实体、非取数任务）
+      判 out_of_scope，不给语句；归因问题（为什么、什么原因）判 attribution，
+      给拆解问法而不给数字。两类此前都按取数处理，生成一条语法正确、能执行、
+      有图表的 SQL，用户拿到无关数字且全程无报错。
+    scoring: 各条 expect 的断言全部成立即通过。
+    cases:
+      - id: oos-001-forecast
+        question: 帮我预测下个月销量
+        intent: 要一个尚未发生的数，不是统计查询
+        expect:
+          status: out_of_scope
+          intent: out_of_scope
+          no_sql: true
+          answer_contains: ["销量"]
+
+      - id: oos-002-inventory
+        question: 库存还有多少
+        intent: 库里没有库存表，此前会硬生成一条查不到的语句
+        expect:
+          status: out_of_scope
+          intent: out_of_scope
+          no_sql: true
+
+      - id: oos-003-not-a-task
+        question: 怎么写爬虫
+        intent: 根本不是数据分析任务
+        expect:
+          status: out_of_scope
+          intent: out_of_scope
+          no_sql: true
+
+      - id: oos-004-estimate
+        question: 预估下个季度的成交总额
+        intent: 「预估」与「统计」的分界：要的是未来的数
+        expect:
+          status: out_of_scope
+          intent: out_of_scope
+          no_sql: true
+
+      - id: oos-005-stock
+        question: 各商品还有多少存货
+        intent: 同库存，换一种说法
+        expect:
+          status: out_of_scope
+          intent: out_of_scope
+          no_sql: true
+
+      - id: att-001-why-drop
+        question: 为什么上个月销售额下降了
+        intent: 问原因。此前返回一个数字，而这个数字用户往往已经知道
+        expect:
+          status: attribution
+          intent: attribution
+          no_sql: true
+          # 替代问法按槽位拼：指标取「成交总额」、时间取「上个月」
+          answer_contains: ["上个月", "成交总额"]
+
+      - id: att-002-refund-rise
+        question: 上个月退款率上升是什么原因
+        intent: 同归因，指标换成退款率，替代问法要跟着换
+        expect:
+          status: attribution
+          intent: attribution
+          no_sql: true
+          answer_contains: ["上个月", "退款率"]
+
+      - id: oos-neg-reason-dim
+        question: 各退款原因的退款率
+        # 反向用例：这里是维度名而不是归因疑问。归因关键词只登记带疑问语素的
+        # 组合，不登记裸词「原因」，就是为了让这一条保持取数。
+        intent: 锁住「原因」二字不被归因分支误伤
+        expect:
+          status: ok
+          intent: query
+
+  slotcoverage:
+    description: >-
+      槽位覆盖核对：route 抽出的问题结构（维度 / 过滤 / 时间 / 排序 / 条数）
+      有没有落进 SQL。这一组不验终态——核对结果只记录不阻断，因为「被过滤的
+      字段又被要求分组」这类情形会让正确的语句也报出缺失，据此拦执行等于把
+      正确结果改成放弃。验的是核对本身准不准：漏报等于答非所问照旧看不见，
+      误报等于给正确结果泼脏水。
+    scoring: 实际缺口集合与期望集合完全一致即通过。
+    cases:
+      - id: sc-001-filter-and-time
+        question: 上个月华东区各品类的成交总额
+        # 桩实现的语句由语义层模板派生，不带时间谓词也不带区域过滤，两处都
+        # 应当被认出来。这正是全程无报错的那类答非所问。
+        intent: 过滤条件与时间区间都没写进语句
+        mock_only: true
+        expect:
+          slot_gap_kinds: [filter, time_range]
+
+      - id: sc-002-time-only
+        question: 上个月各区域销售额
+        intent: 只有时间条件缺失；区域已按输出别名「大区」分组，不能算缺失
+        mock_only: true
+        expect:
+          slot_gap_kinds: [time_range]
+
+      - id: sc-003-fully-covered
+        question: 本季度各城市的下单用户数
+        # 桩实现不识别「本季度」这个时间说法，槽位里没有时间要求，语句也没有
+        # 时间谓词，两边一致 → 无缺口。用来锁住「没要求就别报」这一侧。
+        intent: 槽位没提时间，语句也没有时间谓词，不该报缺口
+        mock_only: true
+        expect:
+          slot_gap_kinds: []
+
+      - id: sc-004-topn-covered
+        question: 上个月销量前五的商品
+        intent: >-
+          TopN 与排序都写进了语句，只有时间缺失。若 TopN 被误报，说明守卫
+          包裹后的内层 LIMIT 没被读到
+        mock_only: true
+        expect:
+          slot_gap_kinds: [time_range]

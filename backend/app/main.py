@@ -20,6 +20,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.api import (
     alerts,
+    audit,
     chat,
     datasource,
     drilldown,
@@ -103,6 +104,7 @@ app.add_middleware(
 )
 
 app.include_router(chat.router)
+app.include_router(audit.router)
 app.include_router(session.router)
 app.include_router(semantic.router)
 app.include_router(drilldown.router)
@@ -118,13 +120,17 @@ app.include_router(datasource.router)
 def health() -> dict[str, Any]:
     """存活探针与部署自查。
 
-    除模型 / 记忆模式外，报告数据截止日期（取订单、退款两表中较早者）与异常
-    订阅健康度（最近求值时刻、连续失败次数、未读数）——FR-O-3 的部署前提是
-    外部计划任务，忘配时订阅静默不工作，必须能在这里一眼看出来（FR-J-3）。
+    除模型 / 记忆模式外，报告数据截止日期与异常订阅健康度（最近求值时刻、
+    连续失败次数、未读数）——FR-O-3 的部署前提是外部计划任务，忘配时订阅
+    静默不工作，必须能在这里一眼看出来（FR-J-3）。
+
+    data_as_of 取 QueryRepository.data_as_of（orders 与 refunds 两表中较早的
+    最大 created_at），与 LangGraph 的时间词锚点同一来源：问答里「上个月」
+    算出来的区间，和这里报出的截止日永远对得上。
     """
     container = get_container()
     freshness = compute_data_freshness(container.repo)
-    cutoffs = [c for c in (freshness["orders_cutoff"], freshness["refunds_cutoff"]) if c]
+    as_of = container.repo.data_as_of()
     latest = container.store.latest_alert_eval()
     failures = container.store.consecutive_alert_failures()
     threshold = container.settings.alert_consecutive_failures_threshold
@@ -136,7 +142,7 @@ def health() -> dict[str, Any]:
         "checkpointer": container.checkpointer_mode,
         "metrics": len(container.catalog.metrics),
         "tables": len(container.catalog.tables),
-        "data_as_of": min(cutoffs) if cutoffs else None,
+        "data_as_of": as_of.isoformat() if as_of else None,
         "data_freshness": freshness,
         "alert_rules": len(container.store.list_alert_rules(enabled_only=True)),
         "alert_last_eval_at": latest.evaluated_at if latest else None,

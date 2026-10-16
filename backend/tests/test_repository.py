@@ -67,6 +67,26 @@ def test_count_rows_matches_query(business_repo: QueryRepository) -> None:
     assert business_repo.count_rows("orders") == expected
 
 
+def test_data_as_of_is_earlier_of_two_table_maxes(business_repo: QueryRepository) -> None:
+    """锚点取两表较早的最大日期：任一张表没有数据的月份不能算可统计区间。"""
+    as_of = business_repo.data_as_of()
+    assert as_of is not None
+    orders_max = business_repo.execute_readonly(
+        "SELECT MAX(created_at) AS m FROM orders"
+    ).rows[0]["m"]
+    refunds_max = business_repo.execute_readonly(
+        "SELECT MAX(created_at) AS m FROM refunds"
+    ).rows[0]["m"]
+    expected = min(str(orders_max)[:10], str(refunds_max)[:10])
+    assert as_of.isoformat() == expected
+
+
+def test_data_as_of_matches_health_endpoint(client, business_repo: QueryRepository) -> None:
+    """/api/health 报的截止日与时间词锚点同一来源，两端必须对得上。"""
+    health = client.get("/api/health").json()
+    assert health["data_as_of"] == business_repo.data_as_of().isoformat()
+
+
 @pytest.mark.parametrize("table", ["orders; DROP TABLE users", "orders ", "or-ders"])
 def test_count_rows_rejects_illegal_table_name(business_repo: QueryRepository, table: str) -> None:
     with pytest.raises(ValueError, match="非法的表名"):
