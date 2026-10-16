@@ -92,6 +92,11 @@ class Settings(BaseSettings):
     llm_price_json: str = ""
     # 异常订阅连续失败达到此次数时在 /api/health 暴露（FR-O-5）
     alert_consecutive_failures_threshold: int = 3
+
+    # —— 审计日志 ——
+    # 关闭后审计完全静默：不写库、不写日志，节点连事件都不必构造。
+    # 应用库不可写时（另一档情形）会自动降级为日志输出，不受本项控制。
+    audit_enabled: bool = True
     # 求值时刻量化周期（分钟）。外部计划任务在同一周期内重试不会产生重复
     # 求值行：默认 60，即每个规则每小时最多一条记录（FR-O-3）。
     alert_eval_period_minutes: int = 60

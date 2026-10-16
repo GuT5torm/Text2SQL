@@ -148,6 +148,49 @@ class Share(Base):
     created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=_now)
 
 
+class AuditLog(Base):
+    """审计日志（独立通道，与 turns 表不共用）。
+
+    三条分界线决定了它必须单独成表：
+
+      1. turns 跟着会话走，delete_session 会级联清空；本表的 session_id 不加
+         外键，会话删了记录与归属都原样保留——否则「谁在什么时候执行过什么」
+         能被一次业务操作抹掉，审计就不成立。不加外键还有第二层考虑：外键
+         约束会让「会话不存在」时的审计写入直接失败，等于让业务表绑架审计；
+         置空（ON DELETE SET NULL）同样不可取，那样连唯一的追溯线索也丢了；
+      2. turns 只记最终落库的那一版；本表连被守卫直接拒绝、从未执行的语句
+         也记，守卫拦截量本身就是要看的运维信号；
+      3. turns 面向使用者回看，本表面向排查与追责，字段按后者设计（规则
+         编号、来源表、耗时、结果）。
+
+    结果集明细不进本表：审计要能追溯到「访问了哪些表哪些字段」，不需要复制
+    一份业务数据。
+    """
+
+    __tablename__ = "audit_log"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    ts: Mapped[dt.datetime] = mapped_column(DateTime, default=_now, index=True)
+    # sql_guard_block / sql_guard_rewrite / sql_guard_pass /
+    # sql_metric_block / sql_execute / sql_execute_error
+    event_type: Mapped[str] = mapped_column(String(32), index=True)
+    # ok / denied / error
+    outcome: Mapped[str] = mapped_column(String(16), index=True)
+    # 守卫规则编号 R1–R9；口径拦截与执行事件为空
+    rule_id: Mapped[str | None] = mapped_column(String(8), nullable=True, index=True)
+    # 刻意不加外键：见类文档字符串。它与 sessions.id 是逻辑关联而非约束
+    session_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    question: Mapped[str | None] = mapped_column(Text, nullable=True)
+    sql_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 人可读原因：守卫原文、口径不符说明、数据库原始报错
+    message: Mapped[str] = mapped_column(Text, default="")
+    source_tables_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    row_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    duration_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # 结构化补充：守卫错误列表、结果列名、是否截断
+    detail_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
 class AlertRule(Base):
     """异常订阅规则（FR-O-1）。
 
