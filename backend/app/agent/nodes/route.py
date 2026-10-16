@@ -89,6 +89,10 @@ def _describe(decision: RouteDecision) -> str:
         return "判定为闲聊"
     if decision.intent == "clarify":
         return "信息不足，需要反问用户"
+    if decision.intent == "out_of_scope":
+        return "超出本数据集范围，已说明原因"
+    if decision.intent == "attribution":
+        return "问的是原因，已给出拆解问法"
     rewritten = (decision.rewritten_question or "").strip()
     if rewritten:
         # 截断到 60 字，避免时间线条目被长问句撑开。

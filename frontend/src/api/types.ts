@@ -4,11 +4,20 @@
  * 字段名一律沿用后端（snake_case），不做改名，避免两层命名不一致带来的理解成本。
  */
 
-/** 意图分类。由 route 节点判定，问答失败时依然会带回。 */
-export type Intent = 'query' | 'chitchat' | 'clarify' | null;
+/**
+ * 意图分类。由 route 节点判定，问答失败时依然会带回。
+ * out_of_scope=超出数据集能力范围；attribution=问原因与因果。两者都不生成 SQL。
+ */
+export type Intent = 'query' | 'chitchat' | 'clarify' | 'out_of_scope' | 'attribution' | null;
 
 /** 一轮问答的终态。status 决定前端渲染哪一类结果分支。 */
-export type ResultStatus = 'ok' | 'clarify' | 'chitchat' | 'error';
+export type ResultStatus =
+  | 'ok'
+  | 'clarify'
+  | 'chitchat'
+  | 'out_of_scope'
+  | 'attribution'
+  | 'error';
 
 /** 节点进度事件。SSE 的 stage 帧即为该结构，按到达顺序追加、不重排。 */
 export interface StageEvent {
@@ -159,6 +168,18 @@ export interface Slots {
   top_n: number | null;
 }
 
+/**
+ * 槽位覆盖核对的一处缺失。kind 取值与后端 slot_coverage.GAP_KINDS 一致：
+ * dimension / filter / time_range / top_n / order_by。
+ */
+export interface SlotGap {
+  kind: string;
+  /** 槽位要求，如「限定「区域」为 华东」 */
+  expected: string;
+  /** 语句实际是什么样 */
+  detail: string;
+}
+
 /** FR-C-2：SQL 解释的分段说明 */
 export interface SqlExplainSegment {
   index: number;
@@ -250,6 +271,12 @@ export interface ChatResult {
   /** FR-A-5：结构化槽位 {指标, 维度, 过滤, 时间, 排序, TopN} */
   slots?: Slots;
   /**
+   * 槽位覆盖核对：问题里问到了、但语句没有落实的部分。
+   * 空数组表示全部落实。它不阻断执行，只是把「语句合法但答的不是问的那件事」
+   * 暴露出来供用户核对。
+   */
+  slot_gaps?: SlotGap[];
+  /**
    * FR-H-3：用户原话。route 节点判定需要补全时，原话仍留在此字段，
    * 改写后的问句走 question（ChatResult.answer 与 turn.question 已用之）。
    * 未改写时与 question 同值；老库迁移记录缺这列时为空字符串。
@@ -298,6 +325,8 @@ export interface TurnItem {
   masked_fields?: string[];
   /** FR-A-5：结构化槽位历史回看 */
   slots?: Slots;
+  /** 槽位覆盖核对结果，与 ChatResult 同契约 */
+  slot_gaps?: SlotGap[];
   /** FR-H-3：用户原话与改写问句。老库迁移记录缺这两列时按 undefined 降级 */
   original_question?: string;
   rewritten_question?: string;

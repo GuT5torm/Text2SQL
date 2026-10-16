@@ -14,16 +14,31 @@ import sqlglot
 from sqlglot import exp
 
 from app.agent.state import AgentState, new_stage
+from app.audit.events import (
+    EVENT_SQL_ERROR,
+    EVENT_SQL_EXECUTE,
+    OUTCOME_ERROR,
+    OUTCOME_OK,
+    AuditEvent,
+)
+from app.audit.recorder import AuditRecorder, get_recorder
 from app.db.repository import QueryError, QueryRepository, QueryTimeout
 
 logger = logging.getLogger(__name__)
 
 NODE = "execute"
 
+# 审计里留存的列名上限。审计关心访问了哪些字段，不关心列有多宽，
+# 宽表场景下全量列名会让 detail 体积失控。
+AUDIT_COLUMNS_LIMIT = 50
 
-def execute_node(state: AgentState, *, repo: QueryRepository) -> dict[str, Any]:
+
+def execute_node(
+    state: AgentState, *, repo: QueryRepository, audit: AuditRecorder | None = None
+) -> dict[str, Any]:
     started = time.monotonic()
     sql = state.get("sql") or ""
+    recorder = audit or get_recorder()
 
     # FR-D-1：把实际执行的 SQL 中出现的表名解析出来。失败路径也解析，
     # 这样排查时能看到最后一次尝试访问了哪些表（语义层召回候选 ≠ 实际访问）。
@@ -33,14 +48,32 @@ def execute_node(state: AgentState, *, repo: QueryRepository) -> dict[str, Any]:
         result = repo.execute_readonly(sql)
     except QueryTimeout as exc:
         logger.info("查询超时：%s", exc)
-        return _fail(state, f"查询超时：{exc}", started, source_tables)
+        return _fail(state, f"查询超时：{exc}", started, source_tables, recorder)
     except QueryError as exc:
         # 数据库原始报错原样带进状态，fix 节点的修正质量主要取决于这句话的信息量
         logger.info("查询执行失败：%s", exc)
-        return _fail(state, str(exc), started, source_tables)
+        return _fail(state, str(exc), started, source_tables, recorder)
     except Exception as exc:  # noqa: BLE001 - 兜住驱动层的意外异常，避免整轮中断
         logger.exception("查询执行出现意外异常")
-        return _fail(state, f"查询执行出现意外异常：{exc}", started, source_tables)
+        return _fail(state, f"查询执行出现意外异常：{exc}", started, source_tables, recorder)
+
+    _record(
+        recorder,
+        state,
+        AuditEvent(
+            event_type=EVENT_SQL_EXECUTE,
+            outcome=OUTCOME_OK,
+            sql_text=sql,
+            source_tables=source_tables,
+            row_count=result.row_count,
+            duration_ms=result.elapsed_ms,
+            detail={
+                "truncated": result.truncated,
+                "columns": list(result.columns)[:AUDIT_COLUMNS_LIMIT],
+                "bytes_estimate": result.bytes_estimate,
+            },
+        ),
+    )
 
     detail = f"返回 {result.row_count} 行，耗时 {result.elapsed_ms:g} ms"
     if result.truncated:
@@ -72,7 +105,23 @@ def _fail(
     error: str,
     started: float,
     source_tables: list[str],
+    recorder: AuditRecorder,
 ) -> dict[str, Any]:
+    # 失败同样要留痕：报错修正是主链路的一部分，几次修正尝试分别因为什么失败，
+    # 只有审计能说清楚（turns 只留最后一次）。
+    _record(
+        recorder,
+        state,
+        AuditEvent(
+            event_type=EVENT_SQL_ERROR,
+            outcome=OUTCOME_ERROR,
+            sql_text=state.get("sql") or "",
+            message=error,
+            source_tables=source_tables,
+            duration_ms=_ms(started),
+            detail={"attempt": int(state.get("retry_count") or 0)},
+        ),
+    )
     history = list(state.get("fix_history") or [])
     history.append({"stage": "execute", "sql": (state.get("sql") or "")[:2000], "error": error})
     return {
@@ -114,6 +163,15 @@ def _extract_source_tables(sql: str) -> list[str]:
         seen.add(name)
         out.append(name)
     return out
+
+
+def _record(recorder: AuditRecorder, state: AgentState, event: AuditEvent) -> None:
+    """补上会话上下文后落审计。理由与 validate 节点同名函数一致。"""
+    if event.session_id is None:
+        event.session_id = state.get("session_id")
+    if event.question is None:
+        event.question = state.get("original_question") or state.get("question")
+    recorder.record(event)
 
 
 def _ms(started: float) -> float:

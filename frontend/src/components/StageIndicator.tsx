@@ -9,6 +9,9 @@ const TERMINAL_COLOR: Record<string, string> = {
   respond: 'success',
   clarify: 'default',
   give_up: 'error',
+  // 超范围与归因不是失败——系统判对了才走这两条路，因此不用 error 色。
+  out_of_scope: 'warning',
+  attribution: 'warning',
 };
 
 /**
@@ -31,6 +34,8 @@ const VERB_LABELS: Record<string, string> = {
   summarize: '总结',
   respond: '回复',
   clarify: '反问',
+  out_of_scope: '超范围',
+  attribution: '归因',
   give_up: '放弃',
 };
 

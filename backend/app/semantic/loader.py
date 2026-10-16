@@ -14,12 +14,15 @@ from __future__ import annotations
 
 import calendar
 import datetime as dt
+import logging
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import yaml
+
+logger = logging.getLogger(__name__)
 
 SEMANTIC_DIR = Path(__file__).resolve().parent
 
@@ -28,6 +31,16 @@ SEMANTIC_DIR = Path(__file__).resolve().parent
 MAX_METRICS = 3
 MAX_TABLES = 5
 MAX_EXAMPLES = 3
+
+# 近似兜底的通过门槛。字面精确命中为零时才启用字符二元组重叠度兜底，
+# 而业务上最容易混淆的两个指标恰恰字形相近：实测「上个月退了多少」在
+# 销量与毛利上都得 0.667，两者打平，退款率反而是 0。
+# 打平说明这一处说法里没有能区分指标的信号，此时猜一个指标比不猜更糟——
+# 猜错会生成一条能执行、有数据、图表正常的语句，全程不报错。
+# 因此除重叠度下限外再要求最优候选显著高于次优，二者缺一则整轮不猜指标，
+# 由空命中逻辑接手。
+APPROX_MIN_OVERLAP = 0.75
+APPROX_MIN_GAP = 0.15
 
 # FR-L-5 允许的计数口径。refund_row 按退款笔数，order 按订单数；
 # 两者在「一单多退」下不是同一个数，维度必须显式声明取哪一个。
@@ -692,8 +705,12 @@ def _score(question: str, phrases: list[str]) -> tuple[float, list[str]]:
     return score, hits
 
 
-def _approx_score(question: str, phrases: list[str]) -> float:
-    """字面不命中时的近似打分，用字符二元组重叠度兜底。"""
+def _approx_score(question: str, phrases: list[str], min_overlap: float = 0.6) -> float:
+    """字面不命中时的近似打分，用字符二元组重叠度兜底。
+
+    min_overlap 由调用方按场景给：指标判定关系到「答的是不是问的那个指标」，
+    门槛要比维度判定高，见 APPROX_MIN_OVERLAP 处的说明。
+    """
     q_grams = _bigrams(question)
     best = 0.0
     for phrase in phrases:
@@ -703,7 +720,7 @@ def _approx_score(question: str, phrases: list[str]) -> float:
         p_grams = _bigrams(p)
         overlap = len(q_grams & p_grams) / len(p_grams)
         # 阈值压得较高，避免「订单量」被「客单价」这类形近词误召回
-        if overlap >= 0.6:
+        if overlap >= min_overlap:
             best = max(best, overlap)
     return best
 
@@ -787,12 +804,29 @@ def recall(question: str, catalog: Catalog, today: dt.date | None = None) -> Sem
 
     # 近似匹配只在整句一个精确信号都没有时才兜底。此前它与精确命中并行，
     # 结果是「卖了多少钱」里一个精确命中，就能让「赚了多少」靠字形相近混进来。
+    #
+    # 现在再加一道闸：候选分数打平时整轮不猜。字形相近的指标（销量 / 毛利 /
+    # 退款率共用「X 了多少」这一套说法模板）打平是常态，此时选谁都是错的，
+    # 不如留空让空命中逻辑接手——空命中至少看得见，猜错则全程无报错。
     if not picked:
+        approx_scored: list[tuple[float, str]] = []
         for m in catalog.metrics:
             phrases = [m["display"], m["name"], *(m.get("synonyms") or [])]
-            approx = _approx_score(q, phrases)
+            approx = _approx_score(q, phrases, APPROX_MIN_OVERLAP)
             if approx > 0:
-                picked[m["name"]] = approx * 1.5
+                approx_scored.append((approx, m["name"]))
+        approx_scored.sort(key=lambda x: -x[0])
+
+        if approx_scored:
+            top_score, top_name = approx_scored[0]
+            runner_up = approx_scored[1][0] if len(approx_scored) > 1 else 0.0
+            if top_score - runner_up >= APPROX_MIN_GAP:
+                picked[top_name] = top_score * 1.5
+            else:
+                logger.info(
+                    "近似兜底放弃：候选分数接近（%s），改由空命中逻辑处理",
+                    [(n, round(s, 3)) for s, n in approx_scored[:3]],
+                )
 
     ordered = sorted(picked.items(), key=lambda x: -x[1])[:MAX_METRICS]
     hit.metrics = [catalog.metric_by_name[n] for n, _ in ordered if n in catalog.metric_by_name]

@@ -22,11 +22,30 @@
 #   caveats        口径边界说明，原样透传到前端与结论中
 #   unit           结果单位
 #   examples       问题 → SQL 示例，随指标一同召回，作为 few-shot
+#   expression_signature
+#                  口径校验签名。召回命中了指标、caveats 也挂对了，生成环节
+#                  仍可能把聚合写歪——典型形态是「口径退化」：问毛利只算成交额、
+#                  问客单价只算成交额、问订单量只算成交额。这类语句能执行、
+#                  结果有数据、图表正常，全程没有报错，是唯一会让用户拿着
+#                  错误数字而不自知的失败形态。
+#                  运行时守卫（agent/nodes/validate.py）与评测断言
+#                  （eval/run_eval.py）共用本签名，口径知识只有这一处来源。
+#                    require_all             SQL 中必须出现的标识（小写子串匹配）
+#                    require_plain_aggregate 要求存在一个聚合调用，其参数不含
+#                                            exclude 列出的标识。判定取「存在一个」
+#                                            而非「全部」，是为了让同一轮命中多个
+#                                            指标的语句不被误判：问「各品类销量和
+#                                            成交总额」时，语句里既有 SUM(quantity)
+#                                            也有 SUM(quantity * unit_price)，
+#                                            只要前者在就不该判为口径不符。
 
 metrics:
   - name: gmv
     display: 成交总额
-    synonyms: [销售额, 营业额, GMV, gmv, 交易额, 卖了多少钱, 销售金额, 成交额, 营收]
+    # 生意 / 经营情况 这类泛词没有唯一指向，登记为成交总额是本项目认定的默认：
+    # 空命中会让模型在没有任何字段清单的情况下凭常识编列名，比给一个默认口径更糟。
+    synonyms: [销售额, 营业额, GMV, gmv, 交易额, 卖了多少钱, 销售金额, 成交额, 营收,
+               生意, 经营情况, 经营状况, 销售情况, 卖得怎么样]
     expression: "SUM(oi.quantity * oi.unit_price)"
     tables: [orders, order_items]
     required_filters:
@@ -36,6 +55,8 @@ metrics:
     dimensions: [order_date, order_month, order_quarter, region, channel, category_name, brand, user_level]
     caveats: "不含已取消与未支付订单；不扣除退款，退款影响需另看 refund_rate。金额单位元。"
     unit: 元
+    expression_signature:
+      require_all: ["unit_price"]
     examples:
       - q: 上个季度华东区各品类的成交总额
         sql: |
@@ -60,6 +81,41 @@ metrics:
           GROUP BY 月份
           ORDER BY 月份
           LIMIT 1000
+      # 按天分组必须先 date() 截断再分组。直接对 created_at 分组会得到
+      # 秒级的时间戳分组，行数等于订单数，图形完全不可读。
+      - q: 近7天每天的成交额
+        sql: |
+          SELECT date(o.created_at) AS 日期,
+                 ROUND(SUM(oi.quantity * oi.unit_price), 2) AS 成交总额
+          FROM orders o
+          JOIN order_items oi ON oi.order_id = o.id
+          WHERE o.status NOT IN ('cancelled', 'pending')
+            AND o.created_at >= '2026-09-09'
+          GROUP BY 日期
+          ORDER BY 日期
+          LIMIT 1000
+      # TopN 的 LIMIT 取用户说的数量，不是默认的 1000
+      - q: 成交额前 5 的品类
+        sql: |
+          SELECT c.name AS 品类,
+                 ROUND(SUM(oi.quantity * oi.unit_price), 2) AS 成交总额
+          FROM orders o
+          JOIN order_items oi ON oi.order_id = o.id
+          JOIN products p ON p.id = oi.product_id
+          JOIN categories c ON c.id = p.category_id
+          WHERE o.status NOT IN ('cancelled', 'pending')
+          GROUP BY c.name
+          ORDER BY 成交总额 DESC
+          LIMIT 5
+      # 不分组时只出一行汇总值，不要凭空补一个时间列
+      - q: 我上个月进账多少
+        sql: |
+          SELECT ROUND(SUM(oi.quantity * oi.unit_price), 2) AS 成交总额
+          FROM orders o
+          JOIN order_items oi ON oi.order_id = o.id
+          WHERE o.status NOT IN ('cancelled', 'pending')
+            AND o.created_at >= '2026-08-01' AND o.created_at < '2026-09-01'
+          LIMIT 1000
 
   - name: sales_volume
     display: 销量
@@ -75,6 +131,13 @@ metrics:
     dimensions: [order_date, order_month, order_quarter, region, channel, category_name, brand]
     caveats: "默认口径为商品件数，不是订单数。若问「多少单」请改用 order_count。"
     unit: 件
+    expression_signature:
+      # 只有 require_all: [quantity] 抓不住「问销量答成金额」：SUM(quantity *
+      # unit_price) 同样含 quantity。纯度检查才是这条签名的关键——
+      # 要求语句里存在一个不带单价与成本的聚合。
+      require_all: ["quantity"]
+      require_plain_aggregate:
+        exclude: ["unit_price", "cost_price"]
     examples:
       - q: 各区域今年各品类卖了多少件
         sql: |
@@ -88,10 +151,55 @@ metrics:
           GROUP BY o.region, c.name
           ORDER BY 销量 DESC
           LIMIT 1000
+      - q: 近一周每天卖了多少件
+        sql: |
+          SELECT date(o.created_at) AS 日期, SUM(oi.quantity) AS 销量
+          FROM orders o
+          JOIN order_items oi ON oi.order_id = o.id
+          WHERE o.status NOT IN ('cancelled', 'pending')
+            AND o.created_at >= '2026-09-09'
+          GROUP BY 日期
+          ORDER BY 日期
+          LIMIT 1000
+      - q: 各品牌今年的销量
+        sql: |
+          SELECT p.brand AS 品牌, SUM(oi.quantity) AS 销量
+          FROM orders o
+          JOIN order_items oi ON oi.order_id = o.id
+          JOIN products p ON p.id = oi.product_id
+          WHERE o.status NOT IN ('cancelled', 'pending')
+            AND o.created_at >= '2026-01-01'
+          GROUP BY p.brand
+          ORDER BY 销量 DESC
+          LIMIT 1000
+      - q: 本月各品类的销量
+        sql: |
+          SELECT c.name AS 品类, SUM(oi.quantity) AS 销量
+          FROM orders o
+          JOIN order_items oi ON oi.order_id = o.id
+          JOIN products p ON p.id = oi.product_id
+          JOIN categories c ON c.id = p.category_id
+          WHERE o.status NOT IN ('cancelled', 'pending')
+            AND o.created_at >= '2026-09-01'
+          GROUP BY c.name
+          ORDER BY 销量 DESC
+          LIMIT 1000
+      # 口语说法「卖出去多少货」指向件数口径，聚合式仍是 SUM(quantity)。
+      # 写成 SUM(quantity * unit_price) 就变成金额了，两者相差一个单价量级。
+      - q: 昨天各渠道卖出去多少货
+        sql: |
+          SELECT o.channel AS 渠道, SUM(oi.quantity) AS 销量
+          FROM orders o
+          JOIN order_items oi ON oi.order_id = o.id
+          WHERE o.status NOT IN ('cancelled', 'pending')
+            AND o.created_at >= '2026-09-14' AND o.created_at < '2026-09-15'
+          GROUP BY o.channel
+          ORDER BY 销量 DESC
+          LIMIT 1000
 
   - name: order_count
     display: 订单量
-    synonyms: [多少单, 订单数, 单量, 订单笔数, 成交量]
+    synonyms: [多少单, 订单数, 单量, 订单笔数, 成交量, 成交笔数, 下单量]
     expression: "COUNT(DISTINCT orders.id)"
     tables: [orders]
     required_filters:
@@ -100,6 +208,8 @@ metrics:
     dimensions: [order_date, order_month, order_quarter, region, channel, user_level, city]
     caveats: "按订单去重计数。不 JOIN order_items，避免一单多商品导致重复计数。"
     unit: 单
+    expression_signature:
+      require_all: ["count(distinct"]
     examples:
       - q: 各渠道上个月的订单量
         sql: |
@@ -110,10 +220,52 @@ metrics:
           GROUP BY o.channel
           ORDER BY 订单量 DESC
           LIMIT 1000
+      # 城市与会员等级都在 users 表，必须 JOIN users ON users.id = orders.user_id。
+      # 这两个维度最容易漏 JOIN——漏了之后语句照样能执行，只是答的不是用户问的。
+      - q: 上周各城市的订单量
+        sql: |
+          SELECT u.city AS 城市, COUNT(DISTINCT o.id) AS 订单量
+          FROM orders o
+          JOIN users u ON u.id = o.user_id
+          WHERE o.status NOT IN ('cancelled', 'pending')
+            AND o.created_at >= '2026-09-07' AND o.created_at < '2026-09-14'
+          GROUP BY u.city
+          ORDER BY 订单量 DESC
+          LIMIT 1000
+      - q: 各会员等级的订单量
+        sql: |
+          SELECT u.level AS 会员等级, COUNT(DISTINCT o.id) AS 订单量
+          FROM orders o
+          JOIN users u ON u.id = o.user_id
+          WHERE o.status NOT IN ('cancelled', 'pending')
+          GROUP BY u.level
+          ORDER BY 订单量 DESC
+          LIMIT 1000
+      - q: 近7天每天的订单量
+        sql: |
+          SELECT date(o.created_at) AS 日期, COUNT(DISTINCT o.id) AS 订单量
+          FROM orders o
+          WHERE o.status NOT IN ('cancelled', 'pending')
+            AND o.created_at >= '2026-09-09'
+          GROUP BY 日期
+          ORDER BY 日期
+          LIMIT 1000
+      # 订单量不 JOIN order_items：一单多商品会按明细行重复计数，
+      # 所以聚合写 COUNT(DISTINCT o.id) 而不是 COUNT(*)。
+      - q: 本月各大区的出单量
+        sql: |
+          SELECT o.region AS 大区, COUNT(DISTINCT o.id) AS 订单量
+          FROM orders o
+          WHERE o.status NOT IN ('cancelled', 'pending')
+            AND o.created_at >= '2026-09-01'
+          GROUP BY o.region
+          ORDER BY 订单量 DESC
+          LIMIT 1000
 
   - name: aov
     display: 客单价
-    synonyms: [平均订单金额, 每单金额, 单均, 客单, 平均客单价]
+    synonyms: [平均订单金额, 每单金额, 单均, 客单, 平均客单价,
+               平均每单, 每单多少钱, 一单多少钱, 平均订单价]
     expression: "SUM(oi.quantity * oi.unit_price) * 1.0 / COUNT(DISTINCT orders.id)"
     tables: [orders, order_items]
     required_filters:
@@ -123,6 +275,10 @@ metrics:
     dimensions: [order_month, order_quarter, region, channel, user_level]
     caveats: "分母为订单数口径。若需按付费用户数口径，分母改为 COUNT(DISTINCT orders.user_id)。分子分母必须来自同一过滤范围。"
     unit: 元
+    expression_signature:
+      # 客单价是比值型：只有除法两侧都在才成立。少任何一侧都会退化成
+      # 单纯的成交额或单纯的订单量，而两种退化都仍然「有数可出」。
+      require_all: ["unit_price", "count(distinct"]
     examples:
       - q: 各会员等级近三个月的客单价
         sql: |
@@ -136,10 +292,63 @@ metrics:
           GROUP BY u.level
           ORDER BY 客单价 DESC
           LIMIT 1000
+      # 客单价是比值型：分子分母必须来自同一过滤范围。这条与上面那条的区别
+      # 只在大区维度，分子分母的写法完全一致，可对照确认没有只改一侧。
+      - q: 今年以来各区域的客单价
+        sql: |
+          SELECT o.region AS 大区,
+                 ROUND(SUM(oi.quantity * oi.unit_price) * 1.0 / COUNT(DISTINCT o.id), 2) AS 客单价
+          FROM orders o
+          JOIN order_items oi ON oi.order_id = o.id
+          WHERE o.status NOT IN ('cancelled', 'pending')
+            AND o.created_at >= '2026-01-01'
+          GROUP BY o.region
+          ORDER BY 客单价 DESC
+          LIMIT 1000
+      - q: 近半年每月的客单价
+        sql: |
+          SELECT strftime('%Y-%m', o.created_at) AS 月份,
+                 ROUND(SUM(oi.quantity * oi.unit_price) * 1.0 / COUNT(DISTINCT o.id), 2) AS 客单价
+          FROM orders o
+          JOIN order_items oi ON oi.order_id = o.id
+          WHERE o.status NOT IN ('cancelled', 'pending')
+            AND o.created_at >= '2026-04-01'
+          GROUP BY 月份
+          ORDER BY 月份
+          LIMIT 1000
+      - q: 各城市的客单价
+        sql: |
+          SELECT u.city AS 城市,
+                 ROUND(SUM(oi.quantity * oi.unit_price) * 1.0 / COUNT(DISTINCT o.id), 2) AS 客单价
+          FROM orders o
+          JOIN users u ON u.id = o.user_id
+          JOIN order_items oi ON oi.order_id = o.id
+          WHERE o.status NOT IN ('cancelled', 'pending')
+          GROUP BY u.city
+          ORDER BY 客单价 DESC
+          LIMIT 1000
+      # 口语「件单价」在 synonyms.yaml 里映射到本指标。注意它与「销量」
+      # 的分辨：件单价问的是一单值多少钱，销量问的是一共卖了多少件。
+      - q: 各渠道的件单价
+        sql: |
+          SELECT o.channel AS 渠道,
+                 ROUND(SUM(oi.quantity * oi.unit_price) * 1.0 / COUNT(DISTINCT o.id), 2) AS 客单价
+          FROM orders o
+          JOIN order_items oi ON oi.order_id = o.id
+          WHERE o.status NOT IN ('cancelled', 'pending')
+            AND o.created_at >= '2026-08-01'
+          GROUP BY o.channel
+          ORDER BY 客单价 DESC
+          LIMIT 1000
 
   - name: refund_rate
     display: 退款率
-    synonyms: [退货率, 退款比例, 退货比例, 退款占比]
+    # 「退了多少」要的其实是数量，库内没有退款金额指标，登记到退款率：
+    # 让它落在退款域，并由 caveats 标出这是比率口径，好过落到销量或毛利上。
+    # 「退单量」必须整词登记：只登记「退单」时，「单量」会作为订单量的同义词
+    # 同时命中且同分，召回结果里订单量反而排在退款率前面。
+    synonyms: [退货率, 退款比例, 退货比例, 退款占比,
+               退了多少, 退了多少单, 退单量, 退单, 退款笔数, 退款订单]
     expression: "COUNT(DISTINCT r.order_id) * 1.0 / COUNT(DISTINCT o.id)"
     tables: [refunds, orders]
     required_filters:
@@ -153,6 +362,10 @@ metrics:
     dimensions: [order_month, region, channel, category_name, refund_reason]
     caveats: "按订单数口径，非金额口径。分母与 gmv 一致，按同期已成交订单量计算（排除 cancelled/pending）。分子为同一过滤范围内发生退款的订单数。按退款原因拆分时，一单多退的订单会在每个涉及的原因里各计一次，各原因之和可能大于整体退款率。"
     unit: 比例
+    expression_signature:
+      # 「refunds」是这条签名的要害：退款率必须真的读到退款表，
+      # 用订单状态里的 refunded 顶替退款表会算成另一回事。
+      require_all: ["refunds", "count(distinct"]
     examples:
       - q: 今年以来各区域的退款率
         sql: |
@@ -165,10 +378,60 @@ metrics:
           GROUP BY o.region
           ORDER BY 退款率 DESC
           LIMIT 1000
+      # 退款表用 LEFT JOIN：没有退款的订单要留在分母里，INNER JOIN 会把
+      # 它们整行去掉，算出来的退款率恒等于 1。
+      - q: 各品类的退货率
+        sql: |
+          SELECT c.name AS 品类,
+                 ROUND(COUNT(DISTINCT r.order_id) * 1.0 / COUNT(DISTINCT o.id), 4) AS 退款率
+          FROM orders o
+          LEFT JOIN refunds r ON r.order_id = o.id
+          JOIN order_items oi ON oi.order_id = o.id
+          JOIN products p ON p.id = oi.product_id
+          JOIN categories c ON c.id = p.category_id
+          WHERE o.status NOT IN ('cancelled', 'pending')
+            AND o.created_at >= '2026-01-01'
+          GROUP BY c.name
+          ORDER BY 退款率 DESC
+          LIMIT 1000
+      - q: 近半年每月的退款率
+        sql: |
+          SELECT strftime('%Y-%m', o.created_at) AS 月份,
+                 ROUND(COUNT(DISTINCT r.order_id) * 1.0 / COUNT(DISTINCT o.id), 4) AS 退款率
+          FROM orders o
+          LEFT JOIN refunds r ON r.order_id = o.id
+          WHERE o.status NOT IN ('cancelled', 'pending')
+            AND o.created_at >= '2026-04-01'
+          GROUP BY 月份
+          ORDER BY 月份
+          LIMIT 1000
+      - q: 各渠道的退货比例
+        sql: |
+          SELECT o.channel AS 渠道,
+                 ROUND(COUNT(DISTINCT r.order_id) * 1.0 / COUNT(DISTINCT o.id), 4) AS 退款率
+          FROM orders o
+          LEFT JOIN refunds r ON r.order_id = o.id
+          WHERE o.status NOT IN ('cancelled', 'pending')
+            AND o.created_at >= '2026-01-01'
+          GROUP BY o.channel
+          ORDER BY 退款率 DESC
+          LIMIT 1000
+      # 指定退款原因时过滤落在 refunds.reason 上，不是 orders 的字段。
+      # 此时分母仍是全部已成交订单，读作「该原因的退款占全部订单的比例」。
+      - q: 七天无理由的退款率是多少
+        sql: |
+          SELECT ROUND(COUNT(DISTINCT r.order_id) * 1.0 / COUNT(DISTINCT o.id), 4) AS 退款率
+          FROM orders o
+          LEFT JOIN refunds r ON r.order_id = o.id
+          WHERE o.status NOT IN ('cancelled', 'pending')
+            AND r.reason = '七天无理由'
+            AND o.created_at >= '2026-01-01'
+          LIMIT 1000
 
   - name: paying_users
     display: 成交用户数
-    synonyms: [多少用户下单, 付费用户数, 下单人数, 买家数, 成交人数, 客户数]
+    synonyms: [多少用户下单, 付费用户数, 下单人数, 买家数, 成交人数, 客户数,
+               下单用户数, 购买人数, 付费用户, 成交客户数]
     expression: "COUNT(DISTINCT orders.user_id)"
     tables: [orders]
     required_filters:
@@ -177,6 +440,8 @@ metrics:
     dimensions: [order_month, order_quarter, region, channel, user_level, city]
     caveats: "同一用户在统计区间内多次下单只计一次。"
     unit: 人
+    expression_signature:
+      require_all: ["user_id"]
     examples:
       - q: 上半年各渠道的成交用户数
         sql: |
@@ -187,10 +452,50 @@ metrics:
           GROUP BY o.channel
           ORDER BY 成交用户数 DESC
           LIMIT 1000
+      # 与 order_count 的区别只在计数对象：这里数 user_id，订单量数 id。
+      # 同一用户期间多次下单都只计一次。
+      - q: 各城市的成交人数
+        sql: |
+          SELECT u.city AS 城市, COUNT(DISTINCT o.user_id) AS 成交用户数
+          FROM orders o
+          JOIN users u ON u.id = o.user_id
+          WHERE o.status NOT IN ('cancelled', 'pending')
+            AND o.created_at >= '2026-01-01'
+          GROUP BY u.city
+          ORDER BY 成交用户数 DESC
+          LIMIT 1000
+      - q: 各会员等级的买家数
+        sql: |
+          SELECT u.level AS 会员等级, COUNT(DISTINCT o.user_id) AS 成交用户数
+          FROM orders o
+          JOIN users u ON u.id = o.user_id
+          WHERE o.status NOT IN ('cancelled', 'pending')
+          GROUP BY u.level
+          ORDER BY 成交用户数 DESC
+          LIMIT 1000
+      - q: 近半年每月的成交用户数
+        sql: |
+          SELECT strftime('%Y-%m', o.created_at) AS 月份,
+                 COUNT(DISTINCT o.user_id) AS 成交用户数
+          FROM orders o
+          WHERE o.status NOT IN ('cancelled', 'pending')
+            AND o.created_at >= '2026-04-01'
+          GROUP BY 月份
+          ORDER BY 月份
+          LIMIT 1000
+      - q: 上个月各区域的成交用户数
+        sql: |
+          SELECT o.region AS 大区, COUNT(DISTINCT o.user_id) AS 成交用户数
+          FROM orders o
+          WHERE o.status NOT IN ('cancelled', 'pending')
+            AND o.created_at >= '2026-08-01' AND o.created_at < '2026-09-01'
+          GROUP BY o.region
+          ORDER BY 成交用户数 DESC
+          LIMIT 1000
 
   - name: gross_profit
     display: 毛利
-    synonyms: [利润, 毛利润, 赚了多少, 盈利]
+    synonyms: [利润, 毛利润, 赚了多少, 盈利, 赚钱能力, 赚的钱, 挣钱能力]
     expression: "SUM(oi.quantity * (oi.unit_price - p.cost_price))"
     tables: [orders, order_items, products]
     required_filters:
@@ -201,6 +506,8 @@ metrics:
     dimensions: [order_month, order_quarter, region, category_name, brand]
     caveats: "成本取 products.cost_price，为当前成本而非历史成本，跨期对比时需注意。不含履约与推广费用。"
     unit: 元
+    expression_signature:
+      require_all: ["cost_price"]
     examples:
       - q: 各品类今年的毛利
         sql: |
@@ -213,5 +520,57 @@ metrics:
           WHERE o.status NOT IN ('cancelled', 'pending')
             AND o.created_at >= '2026-01-01'
           GROUP BY c.name
+          ORDER BY 毛利 DESC
+          LIMIT 1000
+      # 毛利必须真的用到成本列：聚合式里少了 p.cost_price 就退化成成交额，
+      # 而语句照样能执行、有数据、图画得出。
+      - q: 各品牌今年的毛利
+        sql: |
+          SELECT p.brand AS 品牌,
+                 ROUND(SUM(oi.quantity * (oi.unit_price - p.cost_price)), 2) AS 毛利
+          FROM orders o
+          JOIN order_items oi ON oi.order_id = o.id
+          JOIN products p ON p.id = oi.product_id
+          WHERE o.status NOT IN ('cancelled', 'pending')
+            AND o.created_at >= '2026-01-01'
+          GROUP BY p.brand
+          ORDER BY 毛利 DESC
+          LIMIT 1000
+      - q: 近半年每月的利润
+        sql: |
+          SELECT strftime('%Y-%m', o.created_at) AS 月份,
+                 ROUND(SUM(oi.quantity * (oi.unit_price - p.cost_price)), 2) AS 毛利
+          FROM orders o
+          JOIN order_items oi ON oi.order_id = o.id
+          JOIN products p ON p.id = oi.product_id
+          WHERE o.status NOT IN ('cancelled', 'pending')
+            AND o.created_at >= '2026-04-01'
+          GROUP BY 月份
+          ORDER BY 月份
+          LIMIT 1000
+      - q: 上个月各大区赚了多少
+        sql: |
+          SELECT o.region AS 大区,
+                 ROUND(SUM(oi.quantity * (oi.unit_price - p.cost_price)), 2) AS 毛利
+          FROM orders o
+          JOIN order_items oi ON oi.order_id = o.id
+          JOIN products p ON p.id = oi.product_id
+          WHERE o.status NOT IN ('cancelled', 'pending')
+            AND o.created_at >= '2026-08-01' AND o.created_at < '2026-09-01'
+          GROUP BY o.region
+          ORDER BY 毛利 DESC
+          LIMIT 1000
+      # 「利润」与「毛利」在业务口中常混用，本项目统一按 gross_profit 口径，
+      # 成本取当前成本而非历史成本，跨期对比时结论里要带上这条边界。
+      - q: 今年以来各渠道的毛利润
+        sql: |
+          SELECT o.channel AS 渠道,
+                 ROUND(SUM(oi.quantity * (oi.unit_price - p.cost_price)), 2) AS 毛利
+          FROM orders o
+          JOIN order_items oi ON oi.order_id = o.id
+          JOIN products p ON p.id = oi.product_id
+          WHERE o.status NOT IN ('cancelled', 'pending')
+            AND o.created_at >= '2026-01-01'
+          GROUP BY o.channel
           ORDER BY 毛利 DESC
           LIMIT 1000

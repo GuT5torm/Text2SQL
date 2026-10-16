@@ -46,8 +46,12 @@ _GROUP_PATTERNS: tuple[re.Pattern[str], ...] = (
     ),
 )
 
-# 抽词可能带上这些口语尾巴，去掉后再与词汇池比对
-_TAIL_NOISE: tuple[str, ...] = ("情况", "明细", "数据", "信息", "层面", "角度")
+# 抽词可能带上这些口语尾巴，去掉后再与词汇池比对。
+# 「表现」「走势」这类词看着像维度，实际只是「怎么样」的替代表达，
+# 不剥离会被当成「本库未收录的维度」写进答案，反而污染正常查询。
+_TAIL_NOISE: tuple[str, ...] = (
+    "情况", "明细", "数据", "信息", "层面", "角度", "表现", "走势", "变化",
+)
 
 # 介词与虚词。剥离已知片段后常常留下「在」「的」这类孤立字，
 # 不清掉会让提示文案读起来像乱码。
@@ -130,11 +134,14 @@ def _residue(term: str, vocabulary: set[str]) -> str:
     「各种支付方式在去年的分布」抽到的是「支付方式在去年」，剥掉已登记的
     「去年」与孤立虚词后剩下的「支付方式」才是用户真正想看的那一列。
     """
+    # 长词先剥：vocabulary 是集合，迭代顺序由哈希决定，不作排序的话
+    # 「各区域付费用户数」可能先剥掉「用户」而留下「付费数」，
+    # 于是把一个已登记的指标名判成本库没有的生词。
     left = term
     changed = True
     while changed and len(left) >= 2:
         changed = False
-        for known in vocabulary:
+        for known in sorted(vocabulary, key=len, reverse=True):
             if len(known) < 2 or known not in left:
                 continue
             left = left.replace(known, "")

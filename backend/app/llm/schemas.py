@@ -15,8 +15,15 @@ from pydantic import BaseModel, Field, field_validator
 class RouteDecision(BaseModel):
     """route 节点的输出：判断这一问属于哪一类。"""
 
-    intent: Literal["query", "chitchat", "clarify"] = Field(
-        description="query=取数问题；chitchat=与数据无关的闲聊；clarify=信息不足需要反问"
+    # out_of_scope / attribution 是两类「不进取数链路」的终态：
+    # 前者是数据集里根本没有这个东西或根本不是取数任务，后者是问因果而
+    # 单条聚合查询只能给结果、给不出原因。两者都必须在此显式声明，否则
+    # 模型会把它塞进 query，下游照旧生成一条 SQL，用户拿到一个答非所问的数字。
+    intent: Literal["query", "chitchat", "clarify", "out_of_scope", "attribution"] = Field(
+        description=(
+            "query=取数问题；chitchat=与数据无关的闲聊；clarify=信息不足需要反问；"
+            "out_of_scope=超出本数据集能力范围；attribution=问原因/因果的问题"
+        )
     )
     # 指代消解结果。「那上个月呢」这类省略主语的追问在这里被补全为完整问题，
     # 以免后续节点各自处理上下文，多花一次模型调用。

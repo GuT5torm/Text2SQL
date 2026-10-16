@@ -50,6 +50,10 @@ def fix_node(state: AgentState, *, gateway: Gateway) -> dict[str, Any]:
         context=retrieved.get("context") or "（无）",
         sql=sql,
         sql_error=error,
+        # 槽位覆盖核对结果。它与报错是两类问题：报错让语句跑不起来，槽位没
+        # 落实让语句跑得起来却答非所问。修正本来就要重写语句，顺手一起补，
+        # 不额外花一次调用。
+        slot_gaps=_render_slot_gaps(state.get("slot_gaps") or []),
     )
 
     try:
@@ -154,6 +158,24 @@ def _fix_empty_result(
         }
     )
     return base
+
+
+def _render_slot_gaps(items: list[dict[str, Any]]) -> str:
+    """槽位缺口清单。为空时给一句明示，免得模型把空段落读成「信息缺失」。"""
+    if not items:
+        return "（无：语句已覆盖问题里识别到的全部槽位）"
+    labels = {
+        "dimension": "分组维度",
+        "filter": "过滤条件",
+        "time_range": "时间区间",
+        "top_n": "条数限制",
+        "order_by": "排序",
+    }
+    lines = []
+    for gap in items:
+        kind = labels.get(str(gap.get("kind") or ""), "槽位")
+        lines.append(f"- {kind}：{gap.get('expected', '')}（{gap.get('detail', '')}）")
+    return "\n".join(lines)
 
 
 def _render_fix_history(items: list[dict[str, str]]) -> str:

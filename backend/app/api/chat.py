@@ -101,6 +101,9 @@ def _persist(container: Container, session_id: str, question: str, result: dict[
                         # FR-B-3 / FR-D-5：结论数字核对与时间范围一致性
                         "number_checks": result.get("number_checks") or [],
                         "time_range_consistent": result.get("time_range_consistent"),
+                        # 槽位覆盖：语句没落实的槽位。放进 metrics_json 与
+                        # number_checks 同路，历史回看不必新增列
+                        "slot_gaps": result.get("slot_gaps") or [],
                     }
                 ),
                 chart_json=dump_json(result.get("chart")) if result.get("chart") else None,

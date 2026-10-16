@@ -184,6 +184,22 @@ export function AnswerCard({
         </div>
       )}
 
+      {/* 超范围与归因：系统判对了才走这两条路，本轮不生成 SQL，
+          因此提示条要说清「为什么没有数据」，而不是呈现成一个失败。 */}
+      {(result.status === 'out_of_scope' || result.status === 'attribution') && (
+        <Alert
+          type="warning"
+          showIcon
+          message={result.status === 'out_of_scope' ? '超出可答范围，未生成查询' : '问的是原因，已给出拆解问法'}
+          description={
+            result.status === 'out_of_scope'
+              ? '这个问题的数据不在当前数据集里，或不属于统计查询能回答的类型。'
+              : '一次聚合只能给出结果、给不出原因，下面给出可以定位原因的问法。'
+          }
+          style={{ marginTop: 8 }}
+        />
+      )}
+
       {result.status === 'error' && (
         <Alert
           type="error"
@@ -267,6 +283,27 @@ export function AnswerCard({
                 </Tag>
               ))}
             </Space>
+          }
+        />
+      )}
+
+      {isQuery && (result.slot_gaps?.length ?? 0) > 0 && (
+        // 槽位覆盖：语句合法、口径也对，但问到的某处没写进语句。这类偏差全程
+        // 无报错，只能在这里点出来让用户核对，不能替用户改结论。
+        <Alert
+          type="warning"
+          showIcon
+          style={{ marginTop: 8 }}
+          message="这一轮的结果可能没覆盖你问到的部分，建议核对"
+          description={
+            <ul style={{ margin: 0, paddingLeft: 18, lineHeight: 1.7 }}>
+              {result.slot_gaps?.map((gap, i) => (
+                <li key={`${gap.kind}-${i}`}>
+                  {gap.expected}
+                  {gap.detail ? `（${gap.detail}）` : ''}
+                </li>
+              ))}
+            </ul>
           }
         />
       )}

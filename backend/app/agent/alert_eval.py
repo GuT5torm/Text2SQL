@@ -33,6 +33,13 @@ logger = logging.getLogger(__name__)
 _COMPARISON_TEXT = {"gt": "高于", "lt": "低于", "deviation": "偏离度超过"}
 _VALID_COMPARISONS = {"gt", "lt", "deviation"}
 
+# 规则里没有时间窗字段，而单独一个指标名不成句：「成交总额」缺少时间范围，
+# 走到 route 节点会被判成 clarify，FR-O-5 随即记为 error。桩实现不带时间谓词
+# 也能出语句，所以这个缺陷只在真实模型下暴露。合成问句统一补一个完整的自然
+# 周期，既让取数成立，也让 baselines 有可比对的完整本期（月初至今会被判
+# partial_period 而不能参与环比）。
+DEFAULT_PERIOD_TEXT = "上个月"
+
 
 class AlertRuleError(ValueError):
     """规则本身无法求值（指标 / 维度 / 比对方式未登记）。记 error 而不是 404。"""
@@ -69,15 +76,19 @@ def build_question(catalog: Any, rule: AlertRuleRecord) -> tuple[str, str, list[
 
     返回 (问句, 指标显示名, 维度显示名列表)。整体口径（无维度）时问句里不加
     「各」，避免误导生成器拼 GROUP BY。
+
+    两种情况都会带上 DEFAULT_PERIOD_TEXT。规则本身不保存时间窗，缺了它问句
+    就只有一个指标名，route 会据此判为信息不足，偏离度类订阅永远拿不到
+    baselines，gt / lt 类订阅也会在区间未定这件事上反问一句。
     """
     if rule.comparison not in _VALID_COMPARISONS:
         raise AlertRuleError(f"不支持的比对方式：{rule.comparison}")
     metric_display = _display_of(catalog, "metric", rule.metric)
     dim_displays = [_display_of(catalog, "dimension", d) for d in rule.dimensions]
     if dim_displays:
-        question = f"各{'、'.join(dim_displays)}的{metric_display}"
+        question = f"{DEFAULT_PERIOD_TEXT}各{'、'.join(dim_displays)}的{metric_display}"
     else:
-        question = metric_display
+        question = f"{DEFAULT_PERIOD_TEXT}的{metric_display}"
     return question, metric_display, dim_displays
 
 

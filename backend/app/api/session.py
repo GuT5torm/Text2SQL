@@ -123,6 +123,8 @@ def get_session(session_id: str, container: Container = Depends(get_container)) 
                 "time_range_consistent": (_loads(t.metrics_json) or {}).get(
                     "time_range_consistent"
                 ),
+                # 槽位覆盖核对结果，与本轮 ChatResult 契约保持一致
+                "slot_gaps": (_loads(t.metrics_json) or {}).get("slot_gaps") or [],
                 "masked": bool((_loads(t.metrics_json) or {}).get("masked")),
                 "masked_fields": (_loads(t.metrics_json) or {}).get("masked_fields") or [],
                 # FR-A-5：结构化槽位历史回看

@@ -6,7 +6,8 @@ import datetime as dt
 
 import pytest
 
-from app.agent.alert_eval import evaluate_rule, quantize_eval_at
+from app.agent import alert_eval as alert_eval_module
+from app.agent.alert_eval import DEFAULT_PERIOD_TEXT, build_question, evaluate_rule, quantize_eval_at
 from app.config import get_settings
 from app.db.repository import AlertRuleRecord
 
@@ -109,7 +110,49 @@ def test_evaluation_miss_is_ok_not_error(alert_container) -> None:
     assert alert.hits == []
 
 
-def test_evaluation_failure_when_baseline_unavailable(alert_container) -> None:
+def test_build_question_carries_default_period(alert_container) -> None:
+    """整体口径的合成问句原本只有指标名，缺时间范围会被 route 判成 clarify。
+
+    这也是那次「桩模式全绿、切真实模型后订阅连续失败」的根因，用一条语句
+    级别的断言把两个分支都钉住。
+    """
+    overall = AlertRuleRecord(metric="gmv", dimensions=[], comparison="deviation", threshold=5)
+    question, metric_display, dim_displays = build_question(alert_container.catalog, overall)
+    assert question == f"{DEFAULT_PERIOD_TEXT}的成交总额"
+    assert metric_display == "成交总额"
+    assert dim_displays == []
+
+    grouped = AlertRuleRecord(metric="gmv", dimensions=["category_name"], comparison="gt", threshold=1)
+    question, _, dim_displays = build_question(alert_container.catalog, grouped)
+    assert question == f"{DEFAULT_PERIOD_TEXT}各商品类目的成交总额"
+    assert len(dim_displays) == 1
+
+
+def test_evaluation_failure_when_slice_baseline_unavailable(alert_container) -> None:
+    rule = _add_rule(
+        alert_container,
+        metric="gmv",
+        dimensions=["region"],
+        comparison="deviation",
+        threshold=5,
+    )
+    alert = evaluate_rule(alert_container, rule, EVAL_AT)
+    # 分组结果没有逐切片基准，不能假装算得出偏离度：这属于 error 不是未命中
+    assert alert.status == "error"
+    assert "切片" in alert.reason
+
+
+def test_evaluation_failure_when_baseline_unusable(alert_container, monkeypatch) -> None:
+    """偏离度拿不到可比基准时必须记 error。
+
+    缺_None 分支在桩模式下已经走不到（补了默认时间窗后 mock SQL 也能给出
+    基准），所以这里直接注入返回值，专测错误映射而不再依赖偶然的查询形态。
+    """
+    monkeypatch.setattr(
+        alert_eval_module,
+        "_baseline_deviation",
+        lambda result: (None, "注入：无对比基准"),
+    )
     rule = _add_rule(
         alert_container,
         metric="gmv",
@@ -118,9 +161,10 @@ def test_evaluation_failure_when_baseline_unavailable(alert_container) -> None:
         threshold=5,
     )
     alert = evaluate_rule(alert_container, rule, EVAL_AT)
-    # 无时间限定 → 环比 / 同比基准不成立 → 失败而非未命中
+    # FR-O-5：基准不成立是失败，绝不能写成「未命中」
     assert alert.status == "error"
-    assert alert.reason
+    assert alert.hit is False
+    assert "注入" in alert.reason
 
 
 def test_unknown_metric_rule_evaluates_to_error(alert_container) -> None:
@@ -177,11 +221,11 @@ def test_unseen_count_and_mark_seen(alert_container) -> None:
 
 
 def test_consecutive_failures_counter(alert_container) -> None:
-    # 连续两条失败（无基准的 deviation 规则，不同周期）
+    # 连续两条失败（偏离度订阅不支持切片，天然走 error），不同周期
     rule = _add_rule(
         alert_container,
         metric="gmv",
-        dimensions=[],
+        dimensions=["region"],
         comparison="deviation",
         threshold=5,
     )

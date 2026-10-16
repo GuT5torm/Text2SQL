@@ -19,11 +19,13 @@ import logging
 import re
 import time
 from dataclasses import dataclass, field
+from functools import lru_cache
 from typing import Any, TypeVar
 
 from pydantic import BaseModel, ValidationError
 
 from app.config import Settings, get_settings
+from app.llm.mock_sql import build_sql
 
 logger = logging.getLogger(__name__)
 
@@ -304,118 +306,26 @@ def _validate(schema: type[T], data: Any) -> T | None:
 # 单元测试。返回的是固定模板，不代表真实模型能力，不要据此判断准确率。
 # ----------------------------------------------------------------------
 
-_MOCK_SQL_BY_KEYWORD: list[tuple[tuple[str, ...], str]] = [
-    # FR-A-3：TopN。「成交额前 5 的品类」产出 SQL 含 ORDER BY ... DESC LIMIT 5
-    (
-        ("前5", "前 5", "前五", "top5", "top 5"),
-        """SELECT c.name AS 品类,
-       ROUND(SUM(oi.quantity * oi.unit_price), 2) AS 成交总额
-FROM orders o
-JOIN order_items oi ON oi.order_id = o.id
-JOIN products p ON p.id = oi.product_id
-JOIN categories c ON c.id = p.category_id
-WHERE o.status NOT IN ('cancelled', 'pending')
-GROUP BY c.name
-ORDER BY 成交总额 DESC
-LIMIT 5""",
-    ),
-    # FR-A-3：排名。「各区域成交额排名」含排名语义
-    (
-        ("排名", "排行"),
-        """SELECT o.region AS 大区,
-       ROUND(SUM(oi.quantity * oi.unit_price), 2) AS 成交总额,
-       RANK() OVER (ORDER BY SUM(oi.quantity * oi.unit_price) DESC) AS 排名
-FROM orders o
-JOIN order_items oi ON oi.order_id = o.id
-WHERE o.status NOT IN ('cancelled', 'pending')
-GROUP BY o.region
-ORDER BY 排名
-LIMIT 1000""",
-    ),
-    # FR-A-4：数值过滤。阈值不被当作维度取值
-    (
-        ("大于", "超过", "高于"),
-        """SELECT o.region AS 大区,
-       ROUND(SUM(oi.quantity * oi.unit_price), 2) AS 成交总额
-FROM orders o
-JOIN order_items oi ON oi.order_id = o.id
-WHERE o.status NOT IN ('cancelled', 'pending')
-GROUP BY o.region
-HAVING 成交总额 > 1000000
-ORDER BY 成交总额 DESC
-LIMIT 1000""",
-    ),
-    (
-        ("小于", "低于"),
-        """SELECT o.region AS 大区,
-       ROUND(SUM(oi.quantity * oi.unit_price), 2) AS 成交总额
-FROM orders o
-JOIN order_items oi ON oi.order_id = o.id
-WHERE o.status NOT IN ('cancelled', 'pending')
-GROUP BY o.region
-HAVING 成交总额 < 100000
-ORDER BY 成交总额 ASC
-LIMIT 1000""",
-    ),
-    (
-        ("退款", "退货"),
-        """SELECT o.region AS 大区,
-       ROUND(COUNT(DISTINCT r.order_id) * 1.0 / COUNT(DISTINCT o.id), 4) AS 退款率
-FROM orders o
-LEFT JOIN refunds r ON r.order_id = o.id
-GROUP BY o.region
-ORDER BY 退款率 DESC
-LIMIT 1000""",
-    ),
-    (
-        ("品类", "类目", "分类"),
-        """SELECT c.name AS 品类,
-       ROUND(SUM(oi.quantity * oi.unit_price), 2) AS 成交总额
-FROM orders o
-JOIN order_items oi ON oi.order_id = o.id
-JOIN products p ON p.id = oi.product_id
-JOIN categories c ON c.id = p.category_id
-WHERE o.status NOT IN ('cancelled', 'pending')
-GROUP BY c.name
-ORDER BY 成交总额 DESC
-LIMIT 1000""",
-    ),
-    (
-        ("渠道",),
-        """SELECT o.channel AS 渠道,
-       COUNT(DISTINCT o.id) AS 订单量,
-       ROUND(SUM(oi.quantity * oi.unit_price), 2) AS 成交总额
-FROM orders o
-JOIN order_items oi ON oi.order_id = o.id
-WHERE o.status NOT IN ('cancelled', 'pending')
-GROUP BY o.channel
-ORDER BY 订单量 DESC
-LIMIT 1000""",
-    ),
-    (
-        ("区域", "大区", "地区"),
-        """SELECT o.region AS 大区,
-       ROUND(SUM(oi.quantity * oi.unit_price), 2) AS 成交总额
-FROM orders o
-JOIN order_items oi ON oi.order_id = o.id
-WHERE o.status NOT IN ('cancelled', 'pending')
-GROUP BY o.region
-ORDER BY 成交总额 DESC
-LIMIT 1000""",
-    ),
-]
+@lru_cache(maxsize=1)
+def _mock_catalog() -> Any:
+    """桩实现用的语义层目录。
 
-_MOCK_SQL_DEFAULT = """SELECT strftime('%Y-%m', o.created_at) AS 月份,
-       ROUND(SUM(oi.quantity * oi.unit_price), 2) AS 成交总额
-FROM orders o
-JOIN order_items oi ON oi.order_id = o.id
-WHERE o.status NOT IN ('cancelled', 'pending')
-GROUP BY 月份
-ORDER BY 月份
-LIMIT 1000"""
+    桩 SQL 要与语义层口径一致，就得读 metrics.yaml / tables.yaml。按需加载并
+    缓存，import 放在函数体内——只有桩模式会走到这里，真实模型路径不碰。
+
+    替换掉了原先的 _MOCK_SQL_BY_KEYWORD：那份关键词到整条 SQL 的映射里只有
+    成交总额与退款率两种聚合表达式，问毛利、问订单量、问客单价、问成交用户数
+    都会落到成交总额模板上，于是出现「口径提示写毛利、结果列写成交总额」而
+    系统不报错的情形。
+    """
+    from app.semantic.loader import load_catalog
+
+    return load_catalog()
 
 
-_QUESTION_HEADING_RE = re.compile(r"##\s*[^\n#]*问题[^\n]*")
+_QUESTION_SECTION_RE = re.compile(
+    r"##[^\n#]*问题[^\n]*\n(?P<body>.*?)(?=\n##[^#]|\Z)", re.DOTALL
+)
 # route.md 用「本轮问题：」标记问题位置，generate.md 用「## 问题」。
 # 两种标记都要识别，否则 route 节点会把整段 prompt 当成问题做关键词匹配，
 # 误触发改写（prompt 里的示例「按品类拆一下」含「按」字）。
@@ -425,14 +335,19 @@ _CURRENT_QUESTION_RE = re.compile(r"本轮问题：\s*")
 def _mock_subject(prompt: str) -> str:
     """桩实现的关键词匹配对象。
 
-    直接对整段 prompt 做匹配会出错：语义层上下文里列出了全部指标名，
-    「退款率」几乎出现在每个 prompt 中，于是任何问题都会命中退款分支。
-    因此只取最后一个「## …问题」小节之后的内容作为匹配对象。
-    route.md 没有「## 问题」小节，用「本轮问题：」标记，这里同样兜底。
+    取「## …问题」这小节的正文，到下一个二级标题为止；route.md 没有这一节，
+    用「本轮问题：」标记兜底。
+
+    必须按小节截断，不能像先前那样取标题之后的全部内容：fix.md 的
+    「## 原始问题」后面还跟着「## 语义层信息」「## 失败语句」「## 报错原文」，
+    语义层段落里列着本项目全部指标名，桩实现会照着「退款率」去生成一条退款
+    查询，与用户问的成交额毫无关系。
     """
-    matches = list(_QUESTION_HEADING_RE.finditer(prompt))
+    matches = list(_QUESTION_SECTION_RE.finditer(prompt))
     if matches:
-        return prompt[matches[-1].end() :].strip() or prompt
+        body = matches[-1].group("body").strip()
+        if body:
+            return body
     # route.md 路径：取最后一个「本轮问题：」之后的内容
     matches = list(_CURRENT_QUESTION_RE.finditer(prompt))
     if matches:
@@ -442,11 +357,8 @@ def _mock_subject(prompt: str) -> str:
 
 def _mock_text(tag: str, prompt: str) -> str:
     if tag in {"generate", "fix"}:
-        subject = _mock_subject(prompt)
-        for keywords, sql in _MOCK_SQL_BY_KEYWORD:
-            if any(k in subject for k in keywords):
-                return sql
-        return _MOCK_SQL_DEFAULT
+        # SQL 由语义层派生，不再按关键词查写死的模板，原因见 _mock_catalog
+        return build_sql(_mock_subject(prompt), _mock_catalog())
     if tag == "route":
         return "{}"
     if tag == "summarize":
@@ -473,6 +385,26 @@ _MOCK_RANK_KEYWORDS: tuple[str, ...] = ("排名", "排行", "排第几", "榜单
 # FR-A-4：数值过滤关键词（阈值不被当作维度取值）
 _MOCK_NUMERIC_GT: tuple[str, ...] = ("大于", "超过", "高于", "以上", ">", "＞")
 _MOCK_NUMERIC_LT: tuple[str, ...] = ("小于", "低于", "以下", "<", "＜")
+
+# 域外问题：要一个尚未发生的数、查库里没有的实体、或根本不是取数任务。
+# 桩模式靠这张表识别，真实模式由 route.md 的判定标准交给模型。两边必须同时
+# 维护：只改一边会出现「桩模式下新分支永不触发」的评测假绿。
+_MOCK_OUT_OF_SCOPE_KEYWORDS: tuple[str, ...] = (
+    # 预测未来
+    "预测", "预估", "预报", "预计", "未来", "下个月会", "下季度会", "下个月能",
+    # 库里没有的实体
+    "库存", "存货", "备货", "仓储", "物流", "快递", "员工", "绩效", "广告投放",
+    # 不是取数任务
+    "爬虫", "写代码", "写个代码", "帮我写", "翻译成", "翻译一下", "生成代码",
+    "天气", "股价", "招聘",
+)
+
+# 归因问题：问原因与因果。「原因」二字单用会误伤「各退款原因的退款率」，
+# 因此只登记带疑问语素的组合，不登记裸词。
+_MOCK_ATTRIBUTION_KEYWORDS: tuple[str, ...] = (
+    "为什么", "为何", "怎么会", "怎么回事", "咋回事", "什么原因",
+    "原因是什么", "原因何在", "归因", "是怎么造成的", "是谁带",
+)
 
 
 def _mock_route_decision(prompt: str) -> dict[str, Any]:
@@ -575,9 +507,26 @@ def _mock_route_decision(prompt: str) -> dict[str, Any]:
             rewritten = f"[桩改写]{subject}"
             break
 
+    # 域外与归因先于取数判定：两者都会命中指标词（「预测下个月销量」含「销量」，
+    # 「为什么销售额下降」含「销售额」），若放在后面就会被 query 吃掉，
+    # 下游照旧生成一条语法正确但与问题无关的 SQL。
+    intent = "query"
+    reason = "桩实现按关键词填充槽位与改写标记"
+    out_kw = next((k for k in _MOCK_OUT_OF_SCOPE_KEYWORDS if k in subject), None)
+    att_kw = next((k for k in _MOCK_ATTRIBUTION_KEYWORDS if k in subject), None)
+    if out_kw:
+        intent = "out_of_scope"
+        reason = f"桩实现命中域外关键词「{out_kw}」，本数据集不提供该问题所需的数据"
+        rewritten = None
+    elif att_kw:
+        # 槽位保留：归因终态要用指标与时间范围拼替代问法
+        intent = "attribution"
+        reason = f"桩实现命中归因关键词「{att_kw}」，一次聚合查询给不出原因"
+        rewritten = None
+
     return {
-        "intent": "query",
-        "reason": "桩实现按关键词填充槽位与改写标记",
+        "intent": intent,
+        "reason": reason,
         "rewritten_question": rewritten,
         "slots": slots,
     }

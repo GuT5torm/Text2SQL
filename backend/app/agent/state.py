@@ -61,6 +61,11 @@ class RetrievedContext(TypedDict, total=False):
     tables: list[str]
     matched_terms: list[str]
     time_range: dict[str, str] | None
+    # FR-D-4 补充：有分组诉求、但本库没有对应字段的维度
+    unsupported_dimensions: list[str]
+    # 口径校验签名：命中指标在 metrics.yaml 里声明的 expression_signature，
+    # 由 retrieve 摘出、validate 消费。与评测断言同源，见 semantic/expression_check.py
+    metric_signatures: list[dict[str, Any]]
 
 
 class AgentState(TypedDict, total=False):
@@ -73,7 +78,11 @@ class AgentState(TypedDict, total=False):
     rewritten_question: str
 
     # —— 意图 ——
-    intent: Literal["query", "chitchat", "clarify"] | None
+    # out_of_scope 与 attribution 不进取数链路：前者是本数据集答不了，后者是
+    # 单条聚合查询给不出因果。两者都在 route 处终结，不让 generate 硬编一条 SQL。
+    intent: (
+        Literal["query", "chitchat", "clarify", "out_of_scope", "attribution"] | None
+    )
     intent_reason: str
     clarify_question: str | None
     # FR-A-5：结构化槽位 {指标, 维度, 过滤, 时间, 排序, TopN}。
@@ -152,8 +161,18 @@ class AgentState(TypedDict, total=False):
     number_checks: list[dict[str, Any]]
     time_range_consistent: bool | None
 
+    # —— 槽位覆盖（agent/slot_coverage.py）——
+    # route 抽出的槽位里，语句没有落实的那些。与口径签名互补：签名管「聚合对
+    # 不对」，这里管「问到的维度、过滤、时间、排序、条数有没有写进语句」。
+    # 只记录不阻断——实测中「过滤字段同时被要求分组」这类情形会让正确的语句
+    # 也背上假告警，用它拦执行会把正确结果改成放弃。
+    slot_gaps: list[dict[str, Any]]
+
     # —— 控制 ——
-    status: Literal["ok", "clarify", "chitchat", "error"]
+    # 终态与意图同名但不同义：intent 是「判定它是什么」，status 是「这轮怎么收的」。
+    # chitchat / clarify / out_of_scope / attribution 四者一一对应，error 覆盖
+    # give_up 与接入层异常。
+    status: Literal["ok", "clarify", "chitchat", "out_of_scope", "attribution", "error"]
     error: str | None
     stages: Annotated[list[StageEvent], merge_stages]
 

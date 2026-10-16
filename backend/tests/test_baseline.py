@@ -19,9 +19,12 @@ from typing import Any
 import pytest
 
 from app.agent.baselines import (
+    _aggregate_positions,
     _deviation,
+    _exec_scalar,
     _granularity_rank,
     _infer_granularity,
+    _is_natural_month,
     _last_year_window,
     _period_completeness,
     _prior_window,
@@ -122,6 +125,107 @@ class TestPriorWindow:
         start, end = dt.date(2026, 5, 1), dt.date(2026, 8, 1)
         mom_start, mom_end = _prior_window(start, end, "month")
         assert mom_end == start
+
+    def test_natural_month_recognition(self) -> None:
+        """月对齐的前提是窗口恰好为自然月，月初起但跨月结束的不算。"""
+        assert _is_natural_month(dt.date(2026, 8, 1), dt.date(2026, 9, 1)) is True
+        assert _is_natural_month(dt.date(2026, 8, 1), dt.date(2026, 9, 15)) is False
+        assert _is_natural_month(dt.date(2026, 8, 15), dt.date(2026, 9, 15)) is False
+
+    def test_month_window_not_aligned_to_month_start(self) -> None:
+        """非自然月窗口按整月对齐会整段错位。
+
+        8-15 至 9-15 跨度 31 天，推断粒度同样是 month。按整月对齐会得到
+        7-01 至 8-01：与本期不相邻，8-01 至 8-15 无人覆盖，偏离度是两段
+        不同区间之比。等长平移才是紧邻本期的对比期。
+        """
+        assert _prior_window(dt.date(2026, 8, 15), dt.date(2026, 9, 15), "month") == (
+            dt.date(2026, 7, 15),
+            dt.date(2026, 8, 15),
+        )
+
+    def test_month_window_starting_mid_month_shifts_span(self) -> None:
+        assert _prior_window(dt.date(2026, 8, 1), dt.date(2026, 9, 15), "month") == (
+            dt.date(2026, 6, 17),
+            dt.date(2026, 8, 1),
+        )
+
+    @pytest.mark.parametrize(
+        "start, end",
+        [
+            (dt.date(2026, 8, 15), dt.date(2026, 9, 15)),
+            (dt.date(2026, 8, 15), dt.date(2026, 8, 22)),
+            (dt.date(2026, 3, 10), dt.date(2026, 6, 10)),
+            (dt.date(2026, 1, 20), dt.date(2026, 2, 3)),
+        ],
+    )
+    def test_any_window_is_contiguous_and_equal_length(
+        self, start: dt.date, end: dt.date
+    ) -> None:
+        """不论窗口是否对齐自然月，环比都必须紧邻且等长。
+
+        这条是对上面两个缺陷的通用防线：与其逐个窗口写期望值，不如断言
+        「紧邻 + 等长」这条性质，新增粒度或改阈值时同样受约束。
+        """
+        granularity = _infer_granularity((end - start).days)
+        mom_start, mom_end = _prior_window(start, end, granularity)
+        assert mom_end == start
+        assert (mom_end - mom_start).days == (end - start).days
+
+
+class TestExecScalar:
+    """标量取值：必须落到聚合列上。
+
+    去掉 GROUP BY 之后语句里仍保留维度列，维度本身是数值（年份、金额档位、
+    渠道 id）时，「取第一个数值列」会取到维度值。这类错误不抛异常，会顺着
+    baselines 进异常标记与结论一致性校验。
+    """
+
+    def test_numeric_dimension_column_is_not_mistaken_for_aggregate(
+        self, business_repo: Any
+    ) -> None:
+        """年份是数值列且排在聚合列之前，取值必须跳过它。"""
+        sql = (
+            "SELECT CAST(strftime('%Y', o.created_at) AS INTEGER) AS yr, "
+            "SUM(oi.unit_price * oi.quantity) "
+            "FROM orders o JOIN order_items oi ON oi.order_id = o.id "
+            "WHERE o.created_at >= '2026-08-01' AND o.created_at < '2026-09-01' "
+            "GROUP BY yr"
+        )
+        expected = business_repo.execute_readonly(
+            "SELECT SUM(oi.unit_price * oi.quantity) AS t "
+            "FROM orders o JOIN order_items oi ON oi.order_id = o.id "
+            "WHERE o.created_at >= '2026-08-01' AND o.created_at < '2026-09-01'"
+        ).rows[0]["t"]
+        # 断言落在「等于真实聚合值」而不是「不等于年份」：后者在维度值
+        # 恰好等于聚合值时也会通过，测不出问题
+        assert _exec_scalar(business_repo, sql, None) == pytest.approx(expected)
+
+    def test_aliased_aggregate_takes_precedence(self, business_repo: Any) -> None:
+        """有别名时按别名取，与位置判断的结果应当一致。"""
+        sql = (
+            "SELECT o.region AS 区域, SUM(oi.unit_price * oi.quantity) AS 成交总额 "
+            "FROM orders o JOIN order_items oi ON oi.order_id = o.id "
+            "WHERE o.created_at >= '2026-08-01' AND o.created_at < '2026-09-01' "
+            "GROUP BY o.region"
+        )
+        assert _exec_scalar(business_repo, sql, "成交总额") == pytest.approx(
+            _exec_scalar(business_repo, sql, None)
+        )
+
+    def test_two_aggregates_without_alias_yield_none(self, business_repo: Any) -> None:
+        """多个无别名聚合时无法判定取哪个，按缺失处理而不是猜第一个。"""
+        sql = (
+            "SELECT COUNT(*), SUM(oi.unit_price * oi.quantity) "
+            "FROM orders o JOIN order_items oi ON oi.order_id = o.id "
+            "WHERE o.created_at >= '2026-08-01' AND o.created_at < '2026-09-01'"
+        )
+        assert _aggregate_positions(sql) == [0, 1]
+        assert _exec_scalar(business_repo, sql, None) is None
+
+    def test_query_failure_yields_none(self, business_repo: Any) -> None:
+        """执行失败返回 None，由调用方记 missing_reasons，不在取值层吞掉。"""
+        assert _exec_scalar(business_repo, "SELECT SUM(x) FROM 不存在的表", None) is None
 
 
 class TestLastYearWindow:
