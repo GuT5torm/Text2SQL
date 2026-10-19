@@ -1404,3 +1404,68 @@ groups:
           gap_kinds: []
           requires_llm: false
           attribution: guard
+      - id: form-m007-metric-signature-degraded
+        intent: >-
+          条件一条不落，成交总额却被写成销量。守卫放行、条件核对也会放行，
+          唯一能抓到它的是口径签名——这正是「有数可出却不自知」的那一类失败
+        payload:
+          metric: gmv
+          dimensions: [category_name]
+          conditions:
+            - field: orders.region
+              op: in
+              value: [华东, 华南]
+            - field: orders.channel
+              op: eq
+              value: app
+          time_range: {start: 2026-01-01, end: 2026-07-01}
+          top_n: 10
+        inject_sql: >-
+          SELECT c.name AS 品类, SUM(oi.quantity) AS 成交总额
+          FROM orders o
+          JOIN order_items oi ON oi.order_id = o.id
+          JOIN products p ON p.id = oi.product_id
+          JOIN categories c ON c.id = p.category_id
+          WHERE o.status NOT IN ('cancelled', 'pending')
+          AND o.region IN ('华东', '华南')
+          AND o.channel = 'app'
+          AND o.created_at >= '2026-01-01'
+          AND o.created_at < '2026-07-01'
+          GROUP BY 品类 ORDER BY 成交总额 DESC LIMIT 10
+        expect:
+          # 同 m006 的道理：口径校验排在强断言之前，条件压根没走到核对。
+          # 不断 conditions_covered，只断终态与归因
+          status: error
+          gap_kinds: []
+          requires_llm: false
+          attribution: signature
+
+      - id: form-m008-purity-check-degraded
+        intent: >-
+          销量被写成金额。语句里 quantity 确实出现了，只查必要成分的签名抓
+          不到它——要害是纯度检查：要求存在一个不带单价的聚合
+        payload:
+          metric: sales_volume
+          dimensions: [category_name]
+          conditions:
+            - field: orders.region
+              op: eq
+              value: 华东
+          time_range: {start: 2026-07-01, end: 2026-10-01}
+          top_n: 10
+        inject_sql: >-
+          SELECT c.name AS 品类, SUM(oi.quantity * oi.unit_price) AS 销量
+          FROM orders o
+          JOIN order_items oi ON oi.order_id = o.id
+          JOIN products p ON p.id = oi.product_id
+          JOIN categories c ON c.id = p.category_id
+          WHERE o.status NOT IN ('cancelled', 'pending')
+          AND o.region = '华东'
+          AND o.created_at >= '2026-07-01'
+          AND o.created_at < '2026-10-01'
+          GROUP BY 品类 ORDER BY 销量 DESC LIMIT 10
+        expect:
+          status: error
+          gap_kinds: []
+          requires_llm: false
+          attribution: signature

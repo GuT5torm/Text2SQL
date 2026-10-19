@@ -1010,9 +1010,18 @@ T45 之后积压的四件事合并为同一批次，已全部执行完毕。方�
 | 接入编排 | `validate.py` 第四道关卡：`query_source == "form"` 且缺口非空时阻断，带条件清单回灌 fix；新增审计事件 `sql_form_condition_block` |
 | 误伤防线 | 过滤即分组形态排除；区间上界容忍 `<= end-1` 等价写法；表单路径下槽位核对的 filter 类让位（口语「App」对不上库内标准值 `app`） |
 | 桩实现 | `mock_sql.build_sql` 支持条件与维度入参，从提示词条件节回读——不补这一步，强断言在桩模式下必然全红，验的是桩的短板而非语句缺陷 |
-| 评测 | `eval/cases.yaml` 新增 form 组 6 条；`run_eval.py` 新增 `run_form` / `_attribute` / `print_attribution`，支持注入语句构造失败路径 |
-| 基线 | pytest 584 → **594 passed**；eval **13 组 115 条**（通过 110、跳过 5、未通过 0） |
+| 评测 | `eval/cases.yaml` 新增 form 组 8 条；`run_eval.py` 新增 `run_form` / `_attribute` / `print_attribution`，支持注入语句构造失败路径 |
+| 基线 | pytest 584 → **594 passed**；eval **13 组 117 条**（通过 112、跳过 5、未通过 0） |
+
+### 补记：signature 归因用例（同日）
+
+上表初版记「signature 归因尚无用例」，当日补齐两条，四类归因不再有空档：
+
+- `form-m007-metric-signature-degraded`：成交总额写成 `SUM(quantity)`，验「必要成分缺失」分支
+- `form-m008-purity-check-degraded`：销量写成 `SUM(quantity * unit_price)`，语句里 `quantity` 在、必要成分那条拦不住，验「要求存在一个不带单价的聚合」这一分支
+
+两条的注入语句都把表单条件写全：签名校验排在强断言之前，条件不全的话失败会先落在别处，归因就分不清是哪一道关卡拦下的。
 
 ### 未闭合
 
-真实模型未复验（key 仍 401，第四期阻塞）：本组数字证明强断言判定准确与阻断通路成立，不证明真实模型会照谓词清单写全条件。signature 归因尚无用例；四归因未接入前端；`form-m006` 因守卫先于强断言拦下而不断 `conditions_covered`。
+真实模型未复验（key 仍 401，第四期阻塞）：本组数字证明强断言判定准确与阻断通路成立，不证明真实模型会照谓词清单写全条件。四归因未接入前端；`form-m006` 与 `form-m007/m008` 都因上游关卡先于强断言拦下而不断 `conditions_covered`。
