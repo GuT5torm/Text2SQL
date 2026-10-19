@@ -82,6 +82,11 @@ _MIN_BASELINE_RULES = {
     }
 }
 
+# 条件白名单同为必需文件，最小目录留空即可（其余用例不校验条件）
+_MIN_FILTERS = {
+    "filter_fields": [],
+}
+
 
 def _write_catalog(
     directory: Path,
@@ -90,6 +95,7 @@ def _write_catalog(
     synonyms: dict[str, Any] | None = None,
     baseline_rules: dict[str, Any] | None = None,
     finding_rules: dict[str, Any] | None = None,
+    filters: dict[str, Any] | None = None,
 ) -> None:
     for filename, payload in (
         ("tables.yaml", tables if tables is not None else _MIN_TABLES),
@@ -99,6 +105,7 @@ def _write_catalog(
             "baseline_rules.yaml",
             baseline_rules if baseline_rules is not None else _MIN_BASELINE_RULES,
         ),
+        ("filters.yaml", filters if filters is not None else _MIN_FILTERS),
     ):
         (directory / filename).write_text(
             yaml.safe_dump(payload, allow_unicode=True, sort_keys=False), encoding="utf-8"
@@ -483,6 +490,8 @@ def test_validate_accepts_enum_field_with_definition(tmp_path: Path) -> None:
         tmp_path,
         tables=tables,
         synonyms={"synonyms": [], "value_synonyms": [], "time_terms": []},
+        # 这两个用例自带的表结构里没有时间字段，条件白名单留空
+        filters={"filter_fields": []},
     )
     catalog = load_catalog(tmp_path)
     assert "orders" in catalog.table_names()
@@ -511,6 +520,8 @@ def test_validate_does_not_require_definition_for_non_enum_fields(tmp_path: Path
         tmp_path,
         tables=tables,
         synonyms={"synonyms": [], "value_synonyms": [], "time_terms": []},
+        # 这两个用例自带的表结构里没有时间字段，条件白名单留空
+        filters={"filter_fields": []},
     )
     catalog = load_catalog(tmp_path)
     assert "orders" in catalog.table_names()

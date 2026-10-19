@@ -65,7 +65,7 @@ def _iter_chat(container: Container, session_id: str, question: str) -> Iterator
         result = summarize_result(final)
         # FR-I-3：脱敏必须在落库与下发之前，rows_json 与 SSE 帧共用同一份数据。
         mask_result(result, container.catalog)
-        _persist(container, session_id, question, result)
+        persist_turn(container, session_id, question, result)
         yield sse("result", result)
 
     except Exception as exc:  # noqa: BLE001 - 兜住编排层的意外异常，保证前端能收到终止帧
@@ -76,7 +76,10 @@ def _iter_chat(container: Container, session_id: str, question: str) -> Iterator
         yield "event: done\ndata: {}\n\n"
 
 
-def _persist(container: Container, session_id: str, question: str, result: dict[str, Any]) -> None:
+def persist_turn(
+    container: Container, session_id: str, question: str, result: dict[str, Any]
+) -> None:
+    """一轮问答落库。表单入口与对话入口共用，保证两种来源的回看结构一致。"""
     try:
         # 持久化结果集的限制：超过 PERSIST_ROWS 的部分丢，但落库行数如实记下，
         # 与执行端 row_count 一致能让回看时看出「查询到底返了几行 vs 库只存了几行」。
@@ -198,5 +201,5 @@ def chat_sync(req: ChatRequest, container: Container = Depends(get_container)) -
     result = summarize_result(final)
     # FR-I-3：与 SSE 路径同一脱敏点，保证两种接口出参一致。
     mask_result(result, container.catalog)
-    _persist(container, req.session_id, req.question.strip(), result)
+    persist_turn(container, req.session_id, req.question.strip(), result)
     return result

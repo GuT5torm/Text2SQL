@@ -2,6 +2,9 @@
 
 产出三件事：这一问是不是取数问题、省略主语的追问补全成什么、要不要反问用户。
 三者都来自一次模型调用，不额外增加指代消解节点。
+
+唯一的例外是表单查询（query_source == "form"）：条件由用户在界面上选定，
+已经确定，再让模型抽一遍等于把确定的东西交给它猜，因此这条分支不调模型。
 """
 
 from __future__ import annotations
@@ -10,17 +13,29 @@ import logging
 import time
 from typing import Any
 
+from app.agent.form_query import build_slots_from_form, render_form_question
 from app.agent.prompts import format_history, render_prompt
 from app.agent.state import AgentState, new_stage
 from app.llm.gateway import Gateway, LLMError
 from app.llm.schemas import RouteDecision
+from app.semantic.loader import Catalog
 
 logger = logging.getLogger(__name__)
 
 NODE = "route"
 
 
-def route_node(state: AgentState, *, gateway: Gateway, history_window: int = 6) -> dict[str, Any]:
+def route_node(
+    state: AgentState,
+    *,
+    gateway: Gateway,
+    history_window: int = 6,
+    catalog: Catalog | None = None,
+) -> dict[str, Any]:
+    # 表单路径：不调模型，槽位直填。确定的条件不交给模型猜，这是表单查询
+    # 与自由提问唯一的结构性差异，其余节点完全共用。
+    if state.get("query_source") == "form":
+        return _route_form(state, catalog)
     started = time.monotonic()
     question = state.get("question") or ""
     prompt = render_prompt(
@@ -80,6 +95,35 @@ def route_node(state: AgentState, *, gateway: Gateway, history_window: int = 6) 
     update["rewritten_question"] = rewritten or question
 
     return update
+
+
+def _route_form(state: AgentState, catalog: Catalog | None) -> dict[str, Any]:
+    """表单分支：槽位直填 + 问句渲染。
+
+    问句照旧要渲染一句：落库、历史回看、语义召回都要它。召回尤其关键——
+    表单没有自然语言原话，不渲染的话指标口径标注会是空的。
+    """
+    started = time.monotonic()
+    form_query = state.get("form_query") or {}
+    conditions = list(state.get("form_conditions") or [])
+    question = render_form_question(form_query, conditions, catalog)
+
+    return {
+        "intent": "query",
+        "intent_reason": "结构化表单查询，槽位由表单直填，未调用模型",
+        "clarify_question": None,
+        "slots": build_slots_from_form(form_query, conditions, catalog),
+        "question": question,
+        "rewritten_question": question,
+        "stages": [
+            new_stage(
+                NODE,
+                "理解问题",
+                f"表单条件 {len(conditions)} 条直填，未调用模型",
+                _ms(started),
+            )
+        ],
+    }
 
 
 def _describe(decision: RouteDecision) -> str:

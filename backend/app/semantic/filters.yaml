@@ -1,0 +1,60 @@
+# 复杂查询表单的条件白名单
+#
+# 自由提问靠模型从问句里抽条件，抽漏了没有报错；表单查询的条件是用户在界面上
+# 逐条选定的，确定的东西不该再交给模型猜。本文件登记「表单允许出现哪些条件」，
+# 与 tables.yaml 的字段白名单同向，但收得更紧：
+#
+#   tables.yaml 的字段   生成 SQL 时允许出现（守卫 R4/R5 据此拦截编造）
+#   filters.yaml 的字段  表单允许作为过滤条件提交（未登记的字段提交即 400）
+#
+# 两层分开的理由：能出现在 SELECT / JOIN 里的字段，不等于适合作为过滤条件。
+# 用户 id、明细 id 这类字段进了表单只会产生没有业务含义的查询。
+#
+# 字段说明：
+#   field        表.字段，必须已在 tables.yaml 登记
+#   display      中文显示名，用于表单下拉、问句渲染与回显
+#   ops          该字段允许的算子，取自 FILTER_OPS
+#   values_from  取值来源：enum（取 tables.yaml 该字段的 enum）或 date（日期）
+#   join         跨表条件携带的 JOIN 依据。不登记时漏 JOIN 的语句在 SQLite 上
+#                未必报错（列名恰好存在于别的表），静默出错，见方案 F4
+#   note         使用上的约束，会渲染进生成提示词的条件清单
+#
+# 加载期校验见 app/semantic/loader.py::_validate_filter_fields：算子越界、取值
+# 来源不可解析、JOIN 依据指向未登记的表或字段，一律在启动时暴露。
+
+filter_fields:
+  - field: orders.region
+    display: 销售大区
+    ops: [eq, in]
+    values_from: enum
+
+  - field: orders.channel
+    display: 下单渠道
+    ops: [eq, in]
+    values_from: enum
+
+  - field: orders.status
+    display: 订单状态
+    ops: [eq, in]
+    values_from: enum
+    note: >-
+      成交类指标的口径本身已排除 cancelled 与 pending，再按状态过滤会与口径叠加；
+      只有明确要统计取消单、待支付单时才用这个条件。
+
+  - field: orders.created_at
+    display: 下单时间
+    ops: [between, gte, lte]
+    values_from: date
+
+  - field: users.level
+    display: 会员等级
+    ops: [eq, in]
+    values_from: enum
+    join: users.id = orders.user_id
+
+  - field: refunds.reason
+    display: 退款原因
+    ops: [eq, in]
+    values_from: enum
+    join: refunds.order_id = orders.id
+    note: 仅退款类指标（退款率、退款金额）有意义，与成交类指标组合会得到空集。

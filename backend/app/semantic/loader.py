@@ -46,6 +46,12 @@ APPROX_MIN_GAP = 0.15
 # 两者在「一单多退」下不是同一个数，维度必须显式声明取哪一个。
 COUNT_GRAINS = {"refund_row", "order"}
 
+# 表单条件允许的算子（FR-P-1）。模糊匹配（like）不在其中：文本模糊的语义边界
+# 太宽，出问题时分不清是条件写错还是数据本来就该被匹配上，初期不开放。
+FILTER_OPS = ("eq", "in", "between", "gte", "lte")
+# 表单条件的取值来源。enum 取 tables.yaml 该字段的 enum，date 取日期字面量。
+FILTER_VALUE_SOURCES = ("enum", "date")
+
 # 未收录维度提示的固定前缀。graph 拿到真实 SQL 后据此定位该条 caveat，
 # 替换成指明实际分组字段的精化文案，避免同一件事在答案里出现两遍。
 UNSUPPORTED_CAVEAT_PREFIX = "未收录维度"
@@ -119,6 +125,9 @@ class Catalog:
     synonyms: list[dict[str, Any]]
     value_synonyms: list[dict[str, Any]]
     time_terms: list[dict[str, Any]]
+    # 表单查询的条件白名单（filters.yaml）。与 tables 的字段白名单同向但更紧：
+    # 能出现在 SQL 里的字段不等于适合作为表单过滤条件提交。
+    filter_fields: list[dict[str, Any]] = field(default_factory=list)
     # FR-M-3 基准规则表。default 键存默认规则，其余键为指标名
     baseline_rules: dict[str, dict[str, Any]] = field(default_factory=dict)
     # FR-L-1 异常判定规则表，结构同上：default + 指标名 → 规则
@@ -128,6 +137,8 @@ class Catalog:
     metric_by_name: dict[str, dict[str, Any]] = field(default_factory=dict)
     table_by_name: dict[str, dict[str, Any]] = field(default_factory=dict)
     dimension_by_name: dict[str, dict[str, Any]] = field(default_factory=dict)
+    # 表单条件白名单索引：登记名（表.字段）→ 条件定义
+    filter_by_name: dict[str, dict[str, Any]] = field(default_factory=dict)
     # 指标 display（中文名）→ name。metric_used 里放的是 display，
     # 规则表按 name 索引，两处需要一个反向映射
     metric_name_by_display: dict[str, str] = field(default_factory=dict)
@@ -222,11 +233,12 @@ def _read_yaml_optional(path: Path) -> dict[str, Any]:
 
 
 def load_catalog(semantic_dir: Path | None = None) -> Catalog:
-    """加载三份 YAML 并做一致性校验。任何不一致都会一次性列出。"""
+    """加载四份 YAML 并做一致性校验。任何不一致都会一次性列出。"""
     base = semantic_dir or SEMANTIC_DIR
     tables_doc = _read_yaml(base / "tables.yaml")
     metrics_doc = _read_yaml(base / "metrics.yaml")
     syn_doc = _read_yaml(base / "synonyms.yaml")
+    filters_doc = _read_yaml(base / "filters.yaml")
     rules_doc = _read_yaml(base / "baseline_rules.yaml") or {}
     # 规则表是「default + 指标名 → 规则」的扁平映射，yaml 里用 metrics 包一层
     # 只为可读性，加载时压平：后续所有查找都按指标名直接取。
@@ -247,12 +259,16 @@ def load_catalog(semantic_dir: Path | None = None) -> Catalog:
         synonyms=syn_doc.get("synonyms") or [],
         value_synonyms=syn_doc.get("value_synonyms") or [],
         time_terms=syn_doc.get("time_terms") or [],
+        filter_fields=filters_doc.get("filter_fields") or [],
         baseline_rules=flat_rules,
         finding_rules=flat_finding,
     )
     catalog.metric_by_name = {m["name"]: m for m in catalog.metrics}
     catalog.table_by_name = {t["name"]: t for t in catalog.tables}
     catalog.dimension_by_name = {d["name"]: d for d in catalog.dimensions}
+    catalog.filter_by_name = {
+        str(f["field"]): f for f in catalog.filter_fields if f.get("field")
+    }
     catalog.metric_name_by_display = {
         m["display"]: m["name"] for m in catalog.metrics if m.get("display")
     }
@@ -430,6 +446,7 @@ def _validate(c: Catalog) -> list[str]:
                     + "（FR-M-4：需说明划分依据，如收货地址 / 状态机 / 注册入口 / 退款原因归类）"
                 )
 
+    problems += _validate_filter_fields(c)
     problems += _validate_baseline_rules(c)
     problems += _validate_finding_rules(c)
 
@@ -463,6 +480,98 @@ def _validate(c: Catalog) -> list[str]:
                 + "（FR-M-5：同一分母的指标必须使用相同的订单状态过滤）"
             )
 
+    return problems
+
+
+# --------------------------------------------------------------------------
+# 表单条件白名单校验
+# --------------------------------------------------------------------------
+
+
+def _validate_filter_fields(c: Catalog) -> list[str]:
+    """filters.yaml 校验：字段已登记、算子合法、取值来源可解析、JOIN 依据成立。
+
+    放在加载期而不是提交期，理由与字段白名单相同：配置写错时报错的是用户
+    提交的那一次请求，而排查要看配置。启动即报错，坏配置不会带病运行。
+    """
+    if not c.filter_fields:
+        return []
+    problems: list[str] = []
+    seen: set[str] = set()
+
+    for entry in c.filter_fields:
+        field = str(entry.get("field") or "").strip()
+        if not field:
+            problems.append("filters.yaml 存在缺少 field 的条件条目")
+            continue
+        label = f"条件 {field}"
+        if field in seen:
+            problems.append(f"{label} 重复登记")
+        seen.add(field)
+
+        if "." not in field:
+            problems.append(f"{label} 的 field 需写成 表.字段")
+            continue
+        tname, fname = field.split(".", 1)
+        table = c.table_by_name.get(tname)
+        if table is None:
+            problems.append(f"{label} 指向未登记的表 {tname}")
+            continue
+        column = next(
+            (x for x in table.get("fields") or [] if x.get("name") == fname), None
+        )
+        if column is None:
+            problems.append(f"{label} 指向不存在的字段 {field}")
+            continue
+
+        ops = list(entry.get("ops") or [])
+        if not ops:
+            problems.append(f"{label} 未声明 ops")
+        for op in ops:
+            if op not in FILTER_OPS:
+                problems.append(
+                    f"{label} 的算子 {op} 非法（允许 {list(FILTER_OPS)}）"
+                )
+
+        source = entry.get("values_from")
+        if source not in FILTER_VALUE_SOURCES:
+            problems.append(
+                f"{label} 的 values_from 非法：{source}"
+                f"（允许 {list(FILTER_VALUE_SOURCES)}）"
+            )
+        elif source == "enum" and not column.get("enum"):
+            problems.append(
+                f"{label} 声明 values_from: enum，但 {field} 在 tables.yaml 中没有 enum"
+            )
+
+        join = str(entry.get("join") or "").strip()
+        if join:
+            problems.extend(_validate_join_hint(label, join, c))
+    return problems
+
+
+def _validate_join_hint(label: str, join: str, c: Catalog) -> list[str]:
+    """JOIN 依据写成 `表.字段 = 表.字段`，两侧都必须已登记。
+
+    跨表条件漏 JOIN 是表单查询里最隐蔽的一类错误：SQLite 在列名不存在时报
+    `no such column`，但若该列名恰好存在于 FROM 里的另一张表，语句照常执行，
+    过滤落在了错误的列上。依据写在这里，生成侧与校验侧共用同一份。
+    """
+    sides = [s.strip() for s in join.split("=", 1)]
+    if len(sides) != 2 or not all(sides):
+        return [f"{label} 的 join 需写成 表.字段 = 表.字段，当前为 {join}"]
+    problems: list[str] = []
+    for side in sides:
+        if "." not in side:
+            problems.append(f"{label} 的 join 片段「{side}」需写成 表.字段")
+            continue
+        tname, fname = side.split(".", 1)
+        table = c.table_by_name.get(tname.strip())
+        if table is None:
+            problems.append(f"{label} 的 join 指向未登记的表 {tname}")
+            continue
+        if fname.strip() not in {x["name"] for x in table.get("fields", [])}:
+            problems.append(f"{label} 的 join 指向不存在的字段 {side}")
     return problems
 
 

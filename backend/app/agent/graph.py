@@ -296,7 +296,11 @@ def build_graph(
 ) -> Any:
     graph = StateGraph(AgentState)
 
-    graph.add_node("route", partial(route_node, gateway=gateway, history_window=history_window))
+    # catalog 只服务于表单分支的槽位直填与问句渲染，自由提问路径用不到它
+    graph.add_node(
+        "route",
+        partial(route_node, gateway=gateway, history_window=history_window, catalog=catalog),
+    )
     graph.add_node("retrieve", partial(retrieve_node, catalog=catalog, today=data_as_of))
     graph.add_node(
         "generate",
@@ -487,6 +491,9 @@ def summarize_result(state: dict[str, Any]) -> dict[str, Any]:
         "slot_gaps": list(state.get("slot_gaps") or []),
         # —— FR-A-5 结构化槽位 ——
         "slots": state.get("slots") or {},
+        # —— 表单查询（FR-P-1）：来源标记与条件原文，供回看与评测断言 ——
+        "query_source": state.get("query_source") or "chat",
+        "form_conditions": list(state.get("form_conditions") or []),
         # —— FR-H-3 原话与改写句 ——
         "original_question": state.get("original_question") or state.get("question") or "",
         "rewritten_question": state.get("rewritten_question") or "",

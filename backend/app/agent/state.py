@@ -90,6 +90,19 @@ class AgentState(TypedDict, total=False):
     # TypedDict 里出现过的键，未声明的键由节点返回后会被归约器静默丢弃。
     slots: dict[str, Any]
 
+    # —— 复杂表单查询（FR-P-1）——
+    # 表单路径与自由提问共用同一张图，差异只在输入形态：条件由用户在界面上
+    # 选定，route 不再调模型抽取。三个字段都必须显式声明，否则 LangGraph 会
+    # 把节点返回的值静默丢弃（表现为「填了但终态里是空的」）。
+    #
+    # query_source 缺省按 chat 行为，表单入口未接入时链路与现在完全一致。
+    query_source: Literal["chat", "form"]
+    # {metric, dimensions, order_by, top_n}：表单填的确定性查询意图
+    form_query: dict[str, Any]
+    # 校验通过的条件原文（含解析出的表、列、JOIN 依据）。它是强断言与谓词清单
+    # 的数据源，与 slots 的区别是：slots 只留主值供标注，这里保留全量取值。
+    form_conditions: list[dict[str, Any]]
+
     # —— 语义召回 ——
     retrieved: RetrievedContext
 

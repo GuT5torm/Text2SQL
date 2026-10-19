@@ -15,6 +15,7 @@ import time
 from typing import Any
 
 from app.agent.candidate_rerank import rerank_candidates
+from app.agent.form_query import render_condition_block
 from app.agent.prompts import format_history, render_prompt
 from app.agent.state import AgentState, new_stage
 from app.db.guard import SqlGuard
@@ -44,11 +45,22 @@ def generate_node(
     context = retrieved.get("context") or "（无可用语义层信息，请按问题意图谨慎生成）"
     question = state.get("question") or ""
 
+    # 表单路径才渲染条件清单：自由提问的条件由模型自己抽，再给一份谓词清单
+    # 等于让它对同一件事看两遍，反而容易改坏。空串时模板整节不输出。
+    conditions_block = (
+        render_condition_block(
+            state.get("form_conditions") or [], catalog, state.get("form_query")
+        )
+        if state.get("query_source") == "form"
+        else ""
+    )
+
     prompt = render_prompt(
         "generate",
         today=dt.date.today().isoformat(),
         dialect=getattr(gateway.settings, "sql_dialect", "sqlite"),
         context=context,
+        conditions=conditions_block,
         history=format_history(state.get("messages") or [], history_window) or "（无）",
         question=question,
     )

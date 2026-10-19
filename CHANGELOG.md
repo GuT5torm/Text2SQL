@@ -957,3 +957,25 @@ T45 之后积压的四件事合并为同一批次，已全部执行完毕。方�
 
 1. 方案 A 写的锚点公式是 `min(orders.paid_at_max, refunds.created_at_max)`，实现取 `min(orders.created_at_max, refunds.created_at_max)`：全部 SQL 的时间谓词都写在 `orders.created_at` 上，按 `paid_at` 锚定会在跨月订单上让「上个月」落到查询不到数据的月份；且 `/api/health` 原口径就是 `created_at`，取同一公式才能保证「问出来的区间与 health 报的截止日一致」这条验收。
 2. 方案把 `partial_period` 判定列为已知边界（仍按系统日期），实施时一并接入锚点：不接的话数据月份过后「本月」会被判成完整周期，`base-m002` 当天即变红，属于同一缺陷的另一处显形。
+
+## T47　复杂表单查询首期（已完成）
+
+实施日期：2026-10-19　｜　范围：`复杂表单-可靠性设计方案.md` v1.1 §7 第一期
+
+结构化查询入口落地：表单条件不再经自然语言转述，route 对 `query_source == "form"` 走直填分支，条件经语义层白名单校验后渲染成谓词清单交给 generate。逐项验收见 `docs/设计文档/复杂表单-首期-验收概览.md`。
+
+| 子项 | 结果 |
+|---|---|
+| 语义层 | 新增 `app/semantic/filters.yaml`（登记 6 个可用条件字段）与 `app/semantic/filters.py`（校验、解析、谓词渲染）；`loader.py` 增加加载期校验，`filters.yaml` 与其余四份配置同为必需文件 |
+| 编排 | `state.py` 新增 `query_source` / `form_query` / `form_conditions`；`route.py` 表单分支早返回、零模型调用；`graph.py` 给 route 注入 catalog |
+| 生成侧 | `generate.md` 插入 `{conditions}` 节；分组维度与跨表 JOIN 依据一并渲染，维度顺序由表单固定（防 F6 的图例错乱） |
+| 接口 | 新增 `POST /api/query/form`；校验失败一次列全部问题并返回 400；落库复用 `chat.persist_turn` |
+| 基线 | pytest 548 → **576 passed / 0 failed**（新增 28 条）；eval 12 组 109 条未通过 0；tsc 0 error；graph 14 节点不变 |
+
+### 与分期表的一处偏差
+
+方案把 `filters.yaml` 登记与加载期校验排在第二期，实施时提到第一期。白名单是提交前校验的数据源，没有它表单入口只能校验结构、不能校验语义，等于把「未登记条件」（F8）推给守卫拦，用户看到的是 R5 错误码而不是「这个字段没有登记」。登记先行后，第二期前端可直接消费同一份白名单做三级联动。
+
+### 未闭合
+
+条件是否真的落进 SQL 尚无判据：桩 SQL 从语义层模板派生，不带时间谓词与区域过滤，本期只能验证条件完整传到了 generate 节点。真正的判据是第三期的 `check_form_conditions` 强断言，且需在真实模型下复验——key 仍 401，第四期阻塞状态不变。

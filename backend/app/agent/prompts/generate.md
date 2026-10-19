@@ -65,6 +65,8 @@
 
 {history}
 
+{conditions}
+
 ## 问题
 
 {question}
