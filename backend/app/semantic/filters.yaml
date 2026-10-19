@@ -17,10 +17,11 @@
 #   values_from  取值来源：enum（取 tables.yaml 该字段的 enum）或 date（日期）
 #   join         跨表条件携带的 JOIN 依据。不登记时漏 JOIN 的语句在 SQLite 上
 #                未必报错（列名恰好存在于别的表），静默出错，见方案 F4
+#   exclude_with 互斥条件，必须双向登记。前端据此置灰，后端据此拒绝
 #   note         使用上的约束，会渲染进生成提示词的条件清单
 #
 # 加载期校验见 app/semantic/loader.py::_validate_filter_fields：算子越界、取值
-# 来源不可解析、JOIN 依据指向未登记的表或字段，一律在启动时暴露。
+# 来源不可解析、JOIN 依据指向未登记的表或字段、互斥声明未成对，一律在启动时暴露。
 
 filter_fields:
   - field: orders.region
@@ -37,6 +38,9 @@ filter_fields:
     display: 订单状态
     ops: [eq, in]
     values_from: enum
+    # 订单状态与退款原因在业务上不同时成立：先按已取消过滤再按退款原因过滤，
+    # 结果恒为空集。双向声明，前端据此置灰，后端据此拒绝。
+    exclude_with: [refunds.reason]
     note: >-
       成交类指标的口径本身已排除 cancelled 与 pending，再按状态过滤会与口径叠加；
       只有明确要统计取消单、待支付单时才用这个条件。
@@ -57,4 +61,5 @@ filter_fields:
     ops: [eq, in]
     values_from: enum
     join: refunds.order_id = orders.id
+    exclude_with: [orders.status]
     note: 仅退款类指标（退款率、退款金额）有意义，与成交类指标组合会得到空集。

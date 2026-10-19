@@ -154,7 +154,11 @@ def validate_form_query(payload: dict[str, Any], catalog: Catalog) -> list[str]:
     for idx, raw in enumerate(conditions, start=1):
         problems.extend(_validate_condition(raw, catalog, idx))
 
-    problems.extend(_validate_time_range(payload.get("time_range")))
+    time_range = payload.get("time_range")
+    problems.extend(_validate_exclusions(conditions, catalog))
+    # 顶部时间区间与条件行里的下单时间是同一个字段，合并后再查重
+    problems.extend(_validate_duplicate_fields(conditions, catalog, time_range))
+    problems.extend(_validate_time_range(time_range))
 
     top_n = payload.get("top_n")
     if top_n is not None:
@@ -277,6 +281,79 @@ def _validate_enum_values(
                 f"{prefix}：字段 {field_name} 没有取值「{text}」，"
                 f"可用取值：" + "、".join(sorted(mapping.values()) or sorted(mapping))
             )
+    return problems
+
+
+def _validate_exclusions(
+    conditions: list[Any], catalog: Catalog
+) -> list[str]:
+    """互斥条件不能同时出现。
+
+    规则登记在 filters.yaml 的 exclude_with 上，前后端同一份：前端用它置灰
+    选项，后端用它拒绝提交。只写一边会出现「界面置灰了但接口仍接受」的口子。
+    """
+    used: list[str] = []
+    for raw in conditions:
+        if not isinstance(raw, dict):
+            continue
+        field = str(raw.get("field") or "").strip()
+        if field in catalog.filter_by_name:
+            used.append(field)
+
+    problems: list[str] = []
+    reported: set[tuple[str, str]] = set()
+    for field in used:
+        entry = catalog.filter_by_name[field]
+        for other in entry.get("exclude_with") or []:
+            if other not in used:
+                continue
+            key = tuple(sorted((field, str(other))))
+            if key in reported:
+                continue
+            reported.add(key)
+            left = str((catalog.filter_by_name.get(field) or {}).get("display") or field)
+            right = str((catalog.filter_by_name.get(str(other)) or {}).get("display") or other)
+            problems.append(
+                f"条件「{left}」与「{right}」不能同时使用：两者在业务上不同时成立，"
+                f"组合后结果恒为空集"
+            )
+    return problems
+
+
+def _validate_duplicate_fields(
+    conditions: list[Any], catalog: Catalog, time_range: Any = None
+) -> list[str]:
+    """同一字段只接受一个条件。
+
+    两个条件落在同一字段上是「且」的关系，`region = 华东 AND region = 华南` 恒为
+    空集，`created_at >= A AND created_at >= B` 则只留更严的那个——两种都不是用户
+    想要的结果，且都不会报错。多值应当用 in，不该加两行。
+
+    顶部的时间区间会被解析成同一个 created_at 条件，因此一并参与查重，否则
+    「区间 + 条件行」这种重复查不出来。
+    """
+    counts: dict[str, int] = {}
+    if isinstance(time_range, dict) and time_range.get("start"):
+        counts[TIME_FIELD] = 1
+    for raw in conditions:
+        if not isinstance(raw, dict):
+            continue
+        field = str(raw.get("field") or "").strip()
+        if field in catalog.filter_by_name:
+            counts[field] = counts.get(field, 0) + 1
+
+    problems: list[str] = []
+    for field, count in counts.items():
+        if count < 2:
+            continue
+        entry = catalog.filter_by_name[field]
+        display = str(entry.get("display") or field)
+        extra = (
+            "顶部的时间区间与条件行里的下单时间二选一即可"
+            if field == TIME_FIELD
+            else f"多个取值请用算子 in，不要加 {count} 行"
+        )
+        problems.append(f"条件「{display}」出现了 {count} 次：{extra}")
     return problems
 
 
@@ -441,6 +518,20 @@ def render_predicate(cond: ResolvedCondition) -> str:
     return f"{ref} <= '{cond.end}'"
 
 
+def value_options(catalog: Catalog, field: str) -> list[dict[str, str]]:
+    """字段的可选取值，取自 tables.yaml 的 enum。
+
+    前端表单的取值下拉直接用它，不在 TS 里另写一份——取值体系只有语义层一个
+    来源，界面才不会给出库里没有的选项。没有 enum 的字段（日期类）返回空列表，
+    前端按 values_from 改渲染日期选择器。
+    """
+    if "." not in field:
+        return []
+    table, column = field.split(".", 1)
+    mapping = _enum_of(catalog, table, column)
+    return [{"value": k, "label": v} for k, v in mapping.items()]
+
+
 def describe_condition(cond: ResolvedCondition, catalog: Catalog | None = None) -> str:
     """条件的中文描述，用于提交前回显与渲染问句。"""
     labels = value_labels(catalog, cond)
@@ -467,4 +558,5 @@ __all__ = [
     "resolve_metric_def",
     "validate_form_query",
     "value_labels",
+    "value_options",
 ]

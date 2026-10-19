@@ -4,6 +4,7 @@ import { ConfigProvider, Layout, Popover, Space, Tag, Tooltip, Typography } from
 import zhCN from 'antd/locale/zh_CN';
 import { AlertCenter } from '@/pages/AlertCenter';
 import { ChatPage } from '@/pages/ChatPage';
+import { FormQueryPage } from '@/pages/FormQueryPage';
 import { HistoryPage } from '@/pages/HistoryPage';
 import { SharePage } from '@/pages/SharePage';
 import { SessionSidebar } from '@/components/SessionSidebar';
@@ -176,6 +177,7 @@ function Shell() {
         <Content style={{ padding: 16, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
           <Routes>
             <Route path="/" element={<ChatPage onTurnComplete={bumpSessions} />} />
+            <Route path="/form" element={<FormQueryPage onTurnComplete={bumpSessions} />} />
             <Route path="/history" element={<HistoryPage />} />
             <Route path="/alerts" element={<AlertCenter />} />
             <Route path="/share/:token" element={<SharePage />} />

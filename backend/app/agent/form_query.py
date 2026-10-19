@@ -68,7 +68,7 @@ def build_slots_from_form(
         "top_n": form_query.get("top_n"),
     }
 
-    for cond in _as_conditions(conditions):
+    for cond in as_conditions(conditions):
         if cond.op in ("eq", "in"):
             labels = value_labels(catalog, cond)
             if labels:
@@ -111,7 +111,7 @@ def render_form_question(
     )
 
     head, filters_text = "", []
-    for cond in _as_conditions(conditions):
+    for cond in as_conditions(conditions):
         if _is_time(cond):
             head = _time_phrase(cond)
             continue
@@ -148,7 +148,7 @@ def render_condition_block(
     分组维度一并写进这一节：表单里维度的个数与顺序是确定的，交给模型自选会
     出现「结果集相同、行序不同、图表图例错乱」这类不报错的偏差（F6）。
     """
-    resolved = _as_conditions(conditions)
+    resolved = as_conditions(conditions)
     if not resolved:
         return ""
 
@@ -207,7 +207,7 @@ def _dimension_lines(
 # ---------------------------------------------------------------------------
 
 
-def _as_conditions(conditions: list[Any]) -> list[ResolvedCondition]:
+def as_conditions(conditions: list[Any]) -> list[ResolvedCondition]:
     """state 里存的是普通字典（要能进 Checkpointer），这里还原成对象。"""
     out: list[ResolvedCondition] = []
     for raw in conditions or []:
@@ -256,6 +256,7 @@ def _dimension_displays(dimensions: list[Any], catalog: Catalog | None) -> list[
 
 
 __all__ = [
+    "as_conditions",
     "build_form_payload",
     "build_slots_from_form",
     "render_condition_block",

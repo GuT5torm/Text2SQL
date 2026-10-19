@@ -13,6 +13,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, Query
 
 from app.api.deps import Container, get_container
+from app.semantic.filters import value_options
 from app.semantic.loader import describe_catalog, recall, render_context
 
 logger = logging.getLogger(__name__)
@@ -35,6 +36,25 @@ def metrics(container: Container = Depends(get_container)) -> dict[str, Any]:
 def tables(container: Container = Depends(get_container)) -> dict[str, Any]:
     """表结构与字段元数据全文。"""
     return {"items": container.catalog.tables, "dimensions": container.catalog.dimensions}
+
+
+@router.get("/filters")
+def filters(container: Container = Depends(get_container)) -> dict[str, Any]:
+    """表单可用条件清单（filters.yaml），含每个字段的可选取值。
+
+    取值随字段一起下发而不是让前端另取一份：表单的取值体系只有语义层一个
+    来源，界面才不会给出库里没有的选项。日期类字段 values 为空，由前端按
+    values_from 改渲染日期选择器。
+    """
+    catalog = container.catalog
+    items = [
+        {
+            **entry,
+            "values": value_options(catalog, str(entry.get("field") or "")),
+        }
+        for entry in catalog.filter_fields
+    ]
+    return {"items": items}
 
 
 @router.get("/synonyms")

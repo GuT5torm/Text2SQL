@@ -17,6 +17,11 @@ async function readDetail(response: Response): Promise<string> {
     const detail = (body as { detail?: unknown })?.detail;
     if (typeof detail === 'string') return detail;
     if (Array.isArray(detail)) return detail.map((d) => JSON.stringify(d)).join('; ');
+    // 表单校验返回 {"detail": {"errors": [...]}}：逐条列出，用户才知道该改哪一项
+    if (detail && typeof detail === 'object') {
+      const errors = (detail as { errors?: unknown }).errors;
+      if (Array.isArray(errors)) return errors.map((e) => String(e)).join('\n');
+    }
     return response.statusText || `请求失败（${response.status}）`;
   } catch {
     return response.statusText || `请求失败（${response.status}）`;

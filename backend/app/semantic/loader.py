@@ -547,6 +547,39 @@ def _validate_filter_fields(c: Catalog) -> list[str]:
         join = str(entry.get("join") or "").strip()
         if join:
             problems.extend(_validate_join_hint(label, join, c))
+
+    problems.extend(_validate_exclusions(c))
+    return problems
+
+
+def _validate_exclusions(c: Catalog) -> list[str]:
+    """互斥声明的两侧都必须已登记，且必须成对。
+
+    只在一侧写 `exclude_with` 会出现「A 排除 B，但选 B 时 A 还能选」的半边规则，
+    前端按任一顺序点选都会漏掉一半，因此要求双向登记。
+    """
+    problems: list[str] = []
+    registered = {str(f.get("field") or "") for f in c.filter_fields}
+    pairs: dict[tuple[str, str], int] = {}
+    for entry in c.filter_fields:
+        field = str(entry.get("field") or "")
+        for other in entry.get("exclude_with") or []:
+            other = str(other)
+            if other not in registered:
+                problems.append(
+                    f"条件 {field} 的 exclude_with 指向未登记的字段 {other}"
+                )
+                continue
+            if other == field:
+                problems.append(f"条件 {field} 的 exclude_with 不能指向自己")
+                continue
+            key = tuple(sorted((field, other)))
+            pairs[key] = pairs.get(key, 0) + 1
+    for (a, b), count in sorted(pairs.items()):
+        if count != 2:
+            problems.append(
+                f"互斥条件 {a} 与 {b} 只登记了一侧，exclude_with 必须双向声明"
+            )
     return problems
 
 

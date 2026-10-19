@@ -7,6 +7,7 @@ import {
   DatabaseOutlined,
   DeleteOutlined,
   EditOutlined,
+  FilterOutlined,
   HistoryOutlined,
   MenuFoldOutlined,
   MenuUnfoldOutlined,
@@ -246,6 +247,9 @@ export function SessionSidebar({
           <Tooltip title="历史管理" placement="right">
             <Button type="text" icon={<HistoryOutlined />} onClick={() => navigate('/history')} />
           </Tooltip>
+          <Tooltip title="复杂查询" placement="right">
+            <Button type="text" icon={<FilterOutlined />} onClick={() => navigate('/form')} />
+          </Tooltip>
         </div>
       </div>
     );
@@ -295,6 +299,10 @@ export function SessionSidebar({
         <div className="wb-nav-item" onClick={onOpenSettings}>
           <SettingOutlined style={{ fontSize: 15 }} />
           <span>设置</span>
+        </div>
+        <div className="wb-nav-item" onClick={() => navigate('/form')}>
+          <FilterOutlined style={{ fontSize: 15 }} />
+          <span>复杂查询</span>
         </div>
         <div className="wb-nav-item" onClick={() => navigate('/alerts')}>
           <BellOutlined style={{ fontSize: 15 }} />

@@ -41,8 +41,17 @@ export interface TableDoc {
   fields: FieldDoc[];
 }
 
+export interface DimensionDoc {
+  name: string;
+  display: string;
+  expression: string;
+  tables?: string[];
+  synonyms?: string[];
+}
+
 let metricsPromise: Promise<MetricDoc[]> | null = null;
 let tablesPromise: Promise<TableDoc[]> | null = null;
+let dimensionsPromise: Promise<DimensionDoc[]> | null = null;
 
 export function fetchMetrics(): Promise<MetricDoc[]> {
   if (!metricsPromise) {
@@ -58,6 +67,19 @@ export function fetchTables(): Promise<TableDoc[]> {
     tablesPromise = apiGet<{ items: TableDoc[] }>('/api/semantic/tables').then((res) => res.items);
   }
   return tablesPromise;
+}
+
+/**
+ * 维度清单。查询表单的分组维度下拉用它：选项取语义层登记的全部维度，某个指标
+ * 不支持的置灰并给原因，而不是只列该指标支持的——后者会让用户以为维度不存在。
+ */
+export function fetchDimensions(): Promise<DimensionDoc[]> {
+  if (!dimensionsPromise) {
+    dimensionsPromise = apiGet<{ dimensions: DimensionDoc[] }>('/api/semantic/tables').then(
+      (res) => res.dimensions ?? [],
+    );
+  }
+  return dimensionsPromise;
 }
 
 /** 取一个指标的完整定义；未登记返回 null。 */

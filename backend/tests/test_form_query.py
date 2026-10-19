@@ -356,3 +356,118 @@ def test_form_query_rejects_unregistered_field(client: Any, require_mock: None) 
 def test_form_query_requires_existing_session(client: Any, require_mock: None) -> None:
     resp = client.post("/api/query/form", json={**BASE_PAYLOAD, "session_id": "not-exist"})
     assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# 六、互斥条件与提交前预演
+# ---------------------------------------------------------------------------
+
+
+def test_exclusive_conditions_are_rejected(catalog: Catalog) -> None:
+    """订单状态与退款原因不同时成立，组合后结果恒为空集。"""
+    payload = _payload(
+        conditions=[
+            {"field": "orders.status", "op": "eq", "value": "paid"},
+            {"field": "refunds.reason", "op": "eq", "value": "质量问题"},
+        ]
+    )
+    problems = validate_form_query(payload, catalog)
+    assert any("不能同时使用" in p for p in problems)
+    assert any("订单状态" in p and "退款原因" in p for p in problems)
+
+
+def test_one_sided_exclusion_fails_at_load(tmp_path: Path) -> None:
+    """只在一侧写 exclude_with 会漏掉一半组合，加载期就应报错。"""
+    base = _copy_semantic_dir(tmp_path)
+    (base / "filters.yaml").write_text(
+        "filter_fields:\n"
+        "  - field: orders.region\n"
+        "    display: 销售大区\n"
+        "    ops: [eq]\n"
+        "    values_from: enum\n"
+        "    exclude_with: [orders.channel]\n"
+        "  - field: orders.channel\n"
+        "    display: 下单渠道\n"
+        "    ops: [eq]\n"
+        "    values_from: enum\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(SemanticError) as exc:
+        load_catalog(base)
+    assert "只登记了一侧" in str(exc.value)
+
+
+def test_exclusion_to_unregistered_field_fails_at_load(tmp_path: Path) -> None:
+    base = _copy_semantic_dir(tmp_path)
+    (base / "filters.yaml").write_text(
+        "filter_fields:\n"
+        "  - field: orders.region\n"
+        "    display: 销售大区\n"
+        "    ops: [eq]\n"
+        "    values_from: enum\n"
+        "    exclude_with: [orders.nope]\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(SemanticError) as exc:
+        load_catalog(base)
+    assert "未登记的字段" in str(exc.value)
+
+
+def test_filters_endpoint_carries_values_and_exclusions(client: Any) -> None:
+    """表单的取值下拉直接取这份数据，不在前端另写一份取值体系。"""
+    items = client.get("/api/semantic/filters").json()["items"]
+    by_field = {i["field"]: i for i in items}
+    assert "orders.region" in by_field
+    assert len(by_field["orders.region"]["values"]) >= 2
+    # 日期字段没有 enum，取值留给日期选择器
+    assert by_field["orders.created_at"]["values"] == []
+    assert "refunds.reason" in by_field["orders.status"]["exclude_with"]
+
+
+def test_duplicate_field_is_rejected(catalog: Catalog) -> None:
+    """同一字段加两行是「且」的关系，恒为空集；多值应当用 in。"""
+    payload = _payload(
+        conditions=[
+            {"field": "orders.region", "op": "eq", "value": "华东"},
+            {"field": "orders.region", "op": "eq", "value": "华南"},
+        ]
+    )
+    problems = validate_form_query(payload, catalog)
+    assert any("出现了 2 次" in p for p in problems)
+    assert any("in" in p for p in problems)
+
+
+def test_time_range_conflicts_with_time_condition(catalog: Catalog) -> None:
+    """顶部区间与条件行里的下单时间是同一个字段，同时给会互相矛盾。"""
+    payload = _payload(
+        conditions=[
+            {"field": "orders.created_at", "op": "gte", "value": "2026-02-01"}
+        ],
+        time_range={"start": "2026-01-01", "end": "2026-03-01"},
+    )
+    problems = validate_form_query(payload, catalog)
+    assert any("二选一" in p for p in problems)
+
+
+def test_preview_renders_question_and_predicates(client: Any) -> None:
+    resp = client.post("/api/query/form/preview", json=_payload())
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "成交总额" in data["question"]
+    assert "orders.region IN ('华东', '华南')" in data["predicates"]
+    # 区间渲染成一条谓词，起止两个边界都要在，左闭右开
+    assert any(
+        "orders.created_at >= '2026-01-01'" in p and "orders.created_at < '2026-07-01'" in p
+        for p in data["predicates"]
+    )
+    # 谓词逐条对应条件描述，回显时两项一起呈现
+    assert len(data["descriptions"]) == len(data["predicates"])
+
+
+def test_preview_rejects_bad_payload(client: Any) -> None:
+    resp = client.post(
+        "/api/query/form/preview",
+        json=_payload(conditions=[{"field": "orders.coupon_id", "op": "eq", "value": "x"}]),
+    )
+    assert resp.status_code == 400
+    assert "orders.coupon_id" in resp.json()["detail"]["errors"][0]
