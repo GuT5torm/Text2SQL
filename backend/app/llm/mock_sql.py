@@ -218,13 +218,26 @@ def _top_n(subject: str) -> int | None:
     return _parse_cn_number(raw)
 
 
-def build_sql(subject: str, catalog: Any) -> str:
-    """按问句生成桩 SQL。subject 应当是问题原文，不含语义层上下文。"""
+def build_sql(
+    subject: str,
+    catalog: Any,
+    conditions: list[dict[str, Any]] | None = None,
+    dimensions: list[str] | None = None,
+) -> str:
+    """按问句生成桩 SQL。subject 应当是问题原文，不含语义层上下文。
+
+    conditions 与 dimensions 来自表单路径：那一路的指标与维度不写在问句里由
+    关键词去猜，而是确定的。桩实现原本不写任何过滤条件，表单条件下会让强断言
+    在桩模式里必然全红——那是桩的短板不是断言的失效，因此这里补上，让桩模式下
+    也能验证「条件是否真的落进语句」。
+    """
     metric = _best_metric(subject, catalog)
     if metric is None:
         return _FALLBACK_SQL
 
-    dims = _matched_dimensions(subject, catalog)
+    dims = _resolve_dimensions(dimensions, catalog) if dimensions else _matched_dimensions(
+        subject, catalog
+    )
 
     expression = _aliasize(str(metric.get("expression") or ""))
     label = str(metric.get("display") or metric.get("name") or "值")
@@ -247,9 +260,20 @@ def build_sql(subject: str, catalog: Any) -> str:
     for dim in dims:
         aliases |= _aliases_in(_aliasize(str(dim.get("expression") or "")))
 
+    where_lines = ["WHERE o.status NOT IN ('cancelled', 'pending')"]
+    for cond in conditions or []:
+        clause = _render_condition(cond)
+        if not clause:
+            continue
+        where_lines.append(clause)
+        table = str(cond.get("field") or "").split(".", 1)[0]
+        alias = _ALIASES.get(table)
+        if alias:
+            aliases.add(alias)
+
     lines = ["SELECT " + ",\n       ".join(select_parts), "FROM orders o"]
     lines.extend(_join_clauses(aliases))
-    lines.append("WHERE o.status NOT IN ('cancelled', 'pending')")
+    lines.append("\n  AND ".join(where_lines))
     if group_parts:
         lines.append("GROUP BY " + ", ".join(group_parts))
 
@@ -271,3 +295,107 @@ def build_sql(subject: str, catalog: Any) -> str:
     top = _top_n(subject)
     lines.append(f"LIMIT {top if top else 1000}")
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# 表单路径：回读提示词里的条件与维度
+#
+# 桩实现不接 state，只看提示词。表单条件与分组维度都渲染在 generate 提示词的
+# 「必须满足的查询条件」一节里，这里从文本回读——与桩实现一贯的做法一致：它
+# 假装自己读了提示词，实际按固定规则解析。
+# ---------------------------------------------------------------------------
+
+_SECTION_RE = re.compile(r"##\s*必须满足的查询条件.*?(?=^##\s|\Z)", re.MULTILINE | re.DOTALL)
+_PREDICATE_RE = re.compile(r"^\d+\.\s+`(.+?)`\s*$", re.MULTILINE)
+# 分组维度行形如 `- 商品类目：`categories.name``；条件约束行与 JOIN 行都是
+# 「反引号 + ：」开头，取不到「中文名：表达式」这一形态，不会误匹配。
+_DIMENSION_RE = re.compile(r"^-\s*[^`]+：`([^`]+)`\s*$", re.MULTILINE)
+_ATOM_RE = re.compile(r"([a-z_]+)\.([a-z_]+)\s*(>=|<=|=|>|<|IN)\s*(.+)", re.IGNORECASE)
+
+
+def _resolve_dimensions(tokens: list[str], catalog: Any) -> list[dict[str, Any]]:
+    """按配置名或表达式取维度定义，取不到的跳过。"""
+    out: list[dict[str, Any]] = []
+    for token in tokens:
+        text = str(token).strip()
+        if not text:
+            continue
+        dim = (getattr(catalog, "dimension_by_name", None) or {}).get(text)
+        if dim is None:
+            dim = next(
+                (
+                    d
+                    for d in getattr(catalog, "dimensions", None) or []
+                    if str(d.get("expression") or "").strip() == text
+                ),
+                None,
+            )
+        if dim is not None:
+            out.append(dim)
+    return out
+
+
+def _render_condition(cond: dict[str, Any]) -> str:
+    """把一条表单条件渲染成 SQL 谓词，表名换成短别名。"""
+    field = _aliasize(str(cond.get("field") or ""))
+    if "." not in field:
+        return ""
+    op = str(cond.get("op") or "")
+    values = [str(v) for v in (cond.get("values") or []) if v]
+    if op in ("eq", "in") and values:
+        if len(values) == 1:
+            return f"{field} = '{values[0]}'"
+        return f"{field} IN (" + ", ".join(f"'{v}'" for v in values) + ")"
+    start = str(cond.get("start") or "")
+    end = str(cond.get("end") or "")
+    if op == "between" and start and end:
+        return f"{field} >= '{start}' AND {field} < '{end}'"
+    if op == "gte" and start:
+        return f"{field} >= '{start}'"
+    if op == "lte" and end:
+        return f"{field} <= '{end}'"
+    return ""
+
+
+def _parse_predicates(predicates: list[str]) -> list[dict[str, Any]]:
+    """谓词文本 → 条件字典。同一字段的多个原子（>= 与 <）合并成一条 between。"""
+    collected: dict[str, dict[str, Any]] = {}
+    for predicate in predicates:
+        for atom in re.split(r"\s+AND\s+", predicate, flags=re.IGNORECASE):
+            match = _ATOM_RE.search(atom.strip())
+            if match is None:
+                continue
+            table, column, op, rest = (
+                match.group(1),
+                match.group(2),
+                match.group(3).upper(),
+                match.group(4),
+            )
+            field = f"{table}.{column}"
+            slot = collected.setdefault(
+                field,
+                {"field": field, "op": "", "values": [], "start": None, "end": None},
+            )
+            literals = re.findall(r"'([^']*)'", rest)
+            if op in ("=", "IN"):
+                slot["values"] = literals
+                slot["op"] = "in" if op == "IN" or len(literals) > 1 else "eq"
+            elif op in (">=", ">"):
+                slot["start"] = literals[0] if literals else None
+                slot["op"] = "between" if slot["end"] else "gte"
+            else:
+                slot["end"] = literals[0] if literals else None
+                slot["op"] = "between" if slot["start"] else "lte"
+    return [c for c in collected.values() if c["op"]]
+
+
+def parse_form_block(prompt: str) -> tuple[list[dict[str, Any]], list[str]]:
+    """从 generate 提示词回读表单条件与分组维度。非表单路径返回两个空列表。"""
+    section = _SECTION_RE.search(prompt or "")
+    if section is None:
+        return [], []
+    body = section.group(0)
+    conditions = _parse_predicates(_PREDICATE_RE.findall(body))
+    dimensions = [m.group(1).strip() for m in _DIMENSION_RE.finditer(body)]
+    dimensions = [d for d in dimensions if "." in d]
+    return conditions, dimensions

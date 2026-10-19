@@ -170,6 +170,9 @@ def _render_slot_gaps(items: list[dict[str, Any]]) -> str:
         "time_range": "时间区间",
         "top_n": "条数限制",
         "order_by": "排序",
+        # 表单条件与槽位缺口同类但性质不同：它是用户逐条选定的，不是模型抽
+        # 出来的，漏掉即答非所问。文案上标出来，修正时按「必须补」处理。
+        "form_condition": "表单条件（必须补上）",
     }
     lines = []
     for gap in items:

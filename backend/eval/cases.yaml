@@ -1253,3 +1253,154 @@ groups:
         mock_only: true
         expect:
           slot_gap_kinds: [time_range]
+
+  # 复杂表单查询（第三期）
+  #
+  # 与 pipeline 组的分界：那一组验「问句能不能跑出结果」，这一组验「用户在
+  # 表单里逐条选定的条件有没有真的落进语句」。条件是确定的，因此判定收紧为
+  # 强断言——漏写即阻断回灌，而不像自由提问那样只记录。
+  #
+  # case 的入参是表单 payload 而不是 question：表单路径本来就不经过「模型从
+  # 问句里抽条件」这一步，用问句当入参等于把被测对象换成另一条链路。
+  # question 由后端按 payload 渲染，仅用于落库与回看。
+  form:
+    description: >-
+      复杂表单查询：条件是否落进语句、强断言判定是否准、失败能否归到四类原因。
+    scoring: >-
+      终态、行数、条件覆盖、缺口集合、归因分类全部符合期望即通过。
+    cases:
+      - id: form-m001-three-conditions
+        intent: >-
+          区域、渠道、时间区间三个条件加品类分组与 Top10。三个条件必须同时
+          出现在 WHERE 里，少任何一个都是答非所问且全程无报错
+        payload:
+          metric: gmv
+          dimensions: [category_name]
+          conditions:
+            - field: orders.region
+              op: in
+              value: [华东, 华南]
+            - field: orders.channel
+              op: eq
+              value: app
+          time_range: {start: 2026-01-01, end: 2026-07-01}
+          top_n: 10
+        expect:
+          status: ok
+          min_rows: 1
+          conditions_covered: true
+          gap_kinds: []
+          sql_contains: ["region IN", "channel =", "created_at >="]
+          requires_llm: false
+          attribution: none
+
+      - id: form-m002-cross-table-join
+        intent: >-
+          会员等级是 users 表的列，取数主表是 orders。漏 JOIN 时若列名恰好
+          存在于别的表，语句照常执行、过滤落在错误的列上——F4 最难发现的一面
+        payload:
+          metric: gmv
+          dimensions: [category_name]
+          conditions:
+            - field: users.level
+              op: eq
+              value: gold
+          top_n: 5
+        expect:
+          status: ok
+          min_rows: 1
+          conditions_covered: true
+          gap_kinds: []
+          sql_contains: ["JOIN users", "level ="]
+          requires_llm: false
+          attribution: none
+
+      - id: form-m003-filter-and-group-same-field
+        intent: >-
+          按 region 过滤又按 region 分组。这是已知的假告警形态：过滤到确定
+          取值后再按它分组只有一组，不写 WHERE 也是对的。强断言误伤这里，
+          后续阻断、修正、归因全都不可信
+        payload:
+          metric: gmv
+          dimensions: [region]
+          conditions:
+            - field: orders.region
+              op: in
+              value: [华东, 华南]
+          top_n: 10
+        expect:
+          status: ok
+          min_rows: 1
+          conditions_covered: true
+          gap_kinds: []
+          sql_contains: ["region IN"]
+          requires_llm: false
+          attribution: none
+
+      - id: form-m004-time-range-only
+        intent: >-
+          只有一个时间区间，不带枚举条件。锁住「无条件时不得报缺口」这一侧：
+          强断言一旦对空条件集过敏，正常查询会全军覆没
+        payload:
+          metric: order_count
+          dimensions: [channel]
+          time_range: {start: 2026-07-01, end: 2026-10-01}
+          top_n: 20
+        expect:
+          status: ok
+          min_rows: 1
+          conditions_covered: true
+          gap_kinds: []
+          sql_contains: ["created_at"]
+          requires_llm: false
+          attribution: none
+
+      - id: form-m005-missing-conditions-blocked
+        intent: >-
+          注入一条漏掉条件的语句。表单条件下「漏写」不是可以放行的小瑕疵，
+          必须阻断并回灌修正；重试耗尽后归因到 slot
+        payload:
+          metric: gmv
+          dimensions: [category_name]
+          conditions:
+            - field: orders.region
+              op: in
+              value: [华东, 华南]
+            - field: orders.channel
+              op: eq
+              value: app
+          top_n: 10
+        inject_sql: >-
+          SELECT c.name AS 品类, SUM(oi.quantity * oi.unit_price) AS 成交总额
+          FROM orders o JOIN order_items oi ON oi.order_id = o.id
+          JOIN products p ON p.id = oi.product_id
+          JOIN categories c ON c.id = p.category_id
+          WHERE o.status NOT IN ('cancelled', 'pending')
+          GROUP BY 品类 ORDER BY 成交总额 DESC LIMIT 10
+        expect:
+          status: error
+          conditions_covered: false
+          gap_kinds: [form_condition]
+          requires_llm: false
+          attribution: slot
+
+      - id: form-m006-unregistered-table-blocked
+        intent: >-
+          注入一条含未登记表的语句，验守卫仍然是最后一道防线，且这类失败
+          归因到 guard 而不是 slot——两类失败要补的东西不同
+        payload:
+          metric: gmv
+          dimensions: [category_name]
+          conditions:
+            - field: orders.channel
+              op: eq
+              value: app
+          top_n: 10
+        inject_sql: SELECT SUM(amount) AS 成交总额 FROM secret_ledger GROUP BY 1 LIMIT 10
+        expect:
+          # 不断 conditions_covered：守卫在强断言之前拦下，条件压根没被核对。
+          # 「没核对」与「没覆盖」是两件事，合成一个字段就分不清
+          status: error
+          gap_kinds: []
+          requires_llm: false
+          attribution: guard

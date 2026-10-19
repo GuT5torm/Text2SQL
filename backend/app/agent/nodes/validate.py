@@ -16,6 +16,11 @@
 报出缺失，据此拦执行等于把正确结果改成放弃。它的作用是让「SQL 合法但答的不是
 问的那件事」从看不见变成看得见：结果里带上、审计里留痕、评测里可断言。
 
+第四道是表单条件强断言（agent/slot_coverage.check_form_conditions），只对
+表单路径启用：条件是用户在界面上逐条选定的，漏写就是答非所问，因此它阻断并
+回灌 fix；自由提问的槽位核对维持只记录，且表单路径下让位给强断言——两套判定
+并存会互相矛盾（口语字面值「App」对不上库内标准值 app）。
+
 重试计数由 fix 节点递增：retry_count 的语义是「已经修正了几次」，计在产生修正的
 那一侧才不会出现「配置写 3、提示语写 4」这类差一错误。
 """
@@ -27,9 +32,14 @@ import logging
 import time
 from typing import Any
 
-from app.agent.slot_coverage import check_slot_coverage
+from app.agent.slot_coverage import (
+    check_form_conditions,
+    check_slot_coverage,
+    dimension_refs,
+)
 from app.agent.state import AgentState, new_stage
 from app.audit.events import (
+    EVENT_FORM_BLOCK,
     EVENT_GUARD_PASS,
     EVENT_GUARD_REWRITE,
     EVENT_METRIC_BLOCK,
@@ -110,6 +120,48 @@ def validate_node(
         logger.info("口径校验未通过：%s", error)
         return _fail(state, error, started, "口径校验未通过")
 
+    # 第四道：表单条件强断言。只对表单路径启用——条件是用户在界面上确定的，
+    # 漏写就是答非所问，必须阻断；自由提问的槽位核对维持只记录，因为它在
+    # 「按输出别名分组」「过滤字段又被要求分组」两类形态下会误伤正确语句。
+    form_conditions = list(state.get("form_conditions") or [])
+    if state.get("query_source") == "form" and form_conditions:
+        form_gaps = check_form_conditions(
+            result.sql,
+            form_conditions,
+            catalog=catalog,
+            grouped=dimension_refs(
+                (state.get("form_query") or {}).get("dimensions") or [], catalog
+            ),
+        )
+        if form_gaps:
+            error = "表单条件未全部落到语句：" + "；".join(str(g) for g in form_gaps)
+            _record(
+                recorder,
+                state,
+                AuditEvent(
+                    event_type=EVENT_FORM_BLOCK,
+                    outcome=OUTCOME_DENIED,
+                    sql_text=result.sql,
+                    message=error,
+                    source_tables=sorted(result.tables),
+                    duration_ms=_ms(started),
+                    detail={
+                        "gaps": [g.as_dict() for g in form_gaps],
+                        "attempt": int(state.get("retry_count") or 0),
+                    },
+                ),
+            )
+            logger.info("表单条件强断言未通过：%s", error)
+            # 带上条件清单回灌 fix：修正要重写语句，顺手把漏掉的条件补上，
+            # 不额外花一次调用。重试配额用尽后由 give_up 归因到 slot。
+            return _fail(
+                state,
+                error,
+                started,
+                "表单条件核对未通过",
+                extra={"slot_gaps": [g.as_dict() for g in form_gaps]},
+            )
+
     warnings = list(result.warnings)
     detail = f"通过校验，涉及 {len(result.tables)} 张表"
     if result.rewritten:
@@ -121,6 +173,11 @@ def validate_node(
     gaps = check_slot_coverage(
         result.sql, state.get("slots") or {}, catalog=catalog, today=today
     )
+    if state.get("query_source") == "form":
+        # 表单路径的过滤条件交给下面的强断言，槽位核对让位：它按口语字面值
+        # 比对（槽位记「App」，库内标准值是 app），照旧比对只会产出一条假的
+        # 缺失，与强断言的判定互相矛盾。
+        gaps = [g for g in gaps if g.kind != "filter"]
     gap_rows = [g.as_dict() for g in gaps]
     if gaps:
         detail += f"，有 {len(gaps)} 处槽位未落到语句"
@@ -172,13 +229,20 @@ def _record(recorder: AuditRecorder, state: AgentState, event: AuditEvent) -> No
     recorder.record(event)
 
 
-def _fail(state: AgentState, error: str, started: float, label: str) -> dict[str, Any]:
+def _fail(
+    state: AgentState,
+    error: str,
+    started: float,
+    label: str,
+    extra: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     history = list(state.get("fix_history") or [])
     history.append({"stage": "validate", "sql": (state.get("sql") or "")[:2000], "error": error})
     return {
         "sql_error": error,
         "fix_history": history,
         "stages": [new_stage(NODE, "安全校验", f"{label}：{error[:80]}", _ms(started))],
+        **(extra or {}),
     }
 
 

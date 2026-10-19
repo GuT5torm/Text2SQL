@@ -25,7 +25,7 @@ from typing import Any, TypeVar
 from pydantic import BaseModel, ValidationError
 
 from app.config import Settings, get_settings
-from app.llm.mock_sql import build_sql
+from app.llm.mock_sql import build_sql, parse_form_block
 
 logger = logging.getLogger(__name__)
 
@@ -357,8 +357,17 @@ def _mock_subject(prompt: str) -> str:
 
 def _mock_text(tag: str, prompt: str) -> str:
     if tag in {"generate", "fix"}:
-        # SQL 由语义层派生，不再按关键词查写死的模板，原因见 _mock_catalog
-        return build_sql(_mock_subject(prompt), _mock_catalog())
+        # SQL 由语义层派生，不再按关键词查写死的模板，原因见 _mock_catalog。
+        # 表单路径的条件与分组维度不在问句里，从提示词的条件节回读：桩实现若
+        # 不带条件，表单条件的强断言在桩模式下必然全红，那时它验的是桩的短板
+        # 而不是语句的缺陷。
+        conditions, dimensions = parse_form_block(prompt)
+        return build_sql(
+            _mock_subject(prompt),
+            _mock_catalog(),
+            conditions=conditions or None,
+            dimensions=dimensions or None,
+        )
     if tag == "route":
         return "{}"
     if tag == "summarize":

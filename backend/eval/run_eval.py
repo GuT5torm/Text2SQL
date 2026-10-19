@@ -61,6 +61,11 @@ import yaml  # noqa: E402
 
 from app.agent.checkpointer import thread_config  # noqa: E402
 from app.agent.drilldown import build_drilldown  # noqa: E402
+from app.agent.form_query import (  # noqa: E402
+    build_form_payload,
+    build_slots_from_form,
+    render_form_question,
+)
 from app.agent.graph import summarize_result  # noqa: E402
 from app.agent.state import AgentState, initial_state  # noqa: E402
 from app.agent.alert_eval import evaluate_rule  # noqa: E402
@@ -228,6 +233,19 @@ EXPECT_FIELDS: dict[str, set[str]] = {
     },
     "slotcoverage": {
         "slot_gap_kinds",
+    },
+    # 复杂表单查询（FR-P）：
+    #   status              期望终态，同 pipeline
+    #   min_rows            期望最少行数
+    #   requires_llm        桩实现走不到的分支标 true，该条计入 skipped
+    #   sql_contains        SQL 文本中必须出现的子串（条件落语句的直接证据）
+    #   conditions_covered  表单条件是否全部命中（强断言无缺口）
+    #   gap_kinds           期望的缺口类型集合，空集表示「一条都不许有」
+    #   attribution         失败归因，四类之一：guard / signature / slot /
+    #                       generate；none 表示期望本条不失败
+    "form": {
+        "status", "min_rows", "requires_llm",
+        "sql_contains", "conditions_covered", "gap_kinds", "attribution",
     },
 }
 
@@ -1561,6 +1579,162 @@ def run_slotcoverage(cases: list[dict[str, Any]], container: Any) -> list[CaseOu
 
 
 # ---------------------------------------------------------------------------
+# 复杂表单查询（FR-P）
+# ---------------------------------------------------------------------------
+
+# 失败四归因。四类对应四种不同的修法，混在一起统计就无法判断下一轮该补什么：
+# 补语义层登记（guard）、补指标定义（signature）、补提示词与强断言（slot）、
+# 换模型或调参数（generate）。
+ATTRIBUTIONS: tuple[str, ...] = ("guard", "signature", "slot", "generate")
+
+
+def _attribute(result: dict[str, Any]) -> str:
+    """把一次失败归到四类之一。判定按「证据强弱」排序，不是按发生顺序。
+
+    slot 排最前是因为它的证据最硬（缺口类型写在结果里）；guard 有 R 编号；
+    signature 只有文案关键字可依；三者都不是时才落 generate——那一类实际是
+    「没有更具体的证据」，把它当兜底而不是当结论。
+    """
+    gaps = [str(g.get("kind")) for g in (result.get("slot_gaps") or [])]
+    error = str(result.get("sql_error") or result.get("error") or "")
+    if "form_condition" in gaps or "表单条件未全部落到语句" in error:
+        return "slot"
+    if re.search(r"\bR\d\b", error) or "守卫" in error:
+        return "guard"
+    if "口径" in error or "签名" in error:
+        return "signature"
+    return "generate"
+
+
+def _invoke_form(
+    container: Any,
+    case_id: str,
+    payload: dict[str, Any],
+    catalog: Any,
+    inject_sql: str | None,
+) -> dict[str, Any]:
+    """跑一张表单路径的图。
+
+    与 _invoke 的差别只在初始状态：query_source 标 form，条件与槽位由
+    build_form_payload 直填，不经过模型抽取——被测的正是这条分支。
+    inject_sql 非空时接管 SqlDraft，用于构造「条件没落进语句」这类失败。
+    """
+    form = build_form_payload(payload, catalog)
+    question = render_form_question(
+        form["form_query"], form["form_conditions"], catalog
+    )
+    session_id = f"eval-{case_id}"
+    inputs: dict[str, Any] = dict(initial_state(session_id, question))
+    inputs["messages"] = [HumanMessage(content=question)]
+    inputs["query_source"] = "form"
+    inputs["form_query"] = form["form_query"]
+    inputs["form_conditions"] = form["form_conditions"]
+    inputs["slots"] = build_slots_from_form(
+        form["form_query"], form["form_conditions"], catalog
+    )
+
+    gateway = container.gateway
+    original = gateway.complete_json
+    if inject_sql is None:
+        final = container.graph.invoke(inputs, config=thread_config(session_id))
+        return summarize_result(final)
+
+    def patched_complete_json(prompt: str, schema: type, **kwargs: Any):  # type: ignore[no-untyped-def]
+        if schema is SqlDraft:
+            return SqlDraft(sql=inject_sql, reasoning="评测注入的语句", metric_used=[])
+        return original(prompt, schema, **kwargs)
+
+    gateway.complete_json = patched_complete_json
+    try:
+        final = container.graph.invoke(inputs, config=thread_config(session_id))
+        return summarize_result(final)
+    finally:
+        gateway.complete_json = original
+
+
+def run_form(cases: list[dict[str, Any]], container: Any) -> list[CaseOutcome]:
+    """表单条件是否落进语句，以及失败能不能归到四类原因之一。"""
+    catalog = container.catalog
+    mock = bool(container.gateway.mock)
+    outcomes: list[CaseOutcome] = []
+    for case in cases:
+        expect = case.get("expect") or {}
+        if mock and case.get("requires_llm"):
+            outcomes.append(
+                CaseOutcome(
+                    case_id=case["id"],
+                    question=str(case.get("intent") or ""),
+                    intent=case.get("intent", ""),
+                    passed=False,
+                    reasons=[],
+                    observed={"skipped": "桩实现走不到该分支"},
+                    skipped=True,
+                )
+            )
+            continue
+
+        result = _invoke_form(
+            container, case["id"], case.get("payload") or {}, catalog, case.get("inject_sql")
+        )
+        sql = result.get("sql") or ""
+        gaps = result.get("slot_gaps") or []
+        kinds = sorted({str(g.get("kind")) for g in gaps})
+        covered = "form_condition" not in kinds
+        attribution = _attribute(result) if result.get("status") == "error" else "none"
+
+        observed = {
+            "status": result.get("status"),
+            "row_count": result.get("row_count"),
+            "conditions_covered": covered,
+            "gap_kinds": kinds,
+            "attribution": attribution,
+            "retry_count": result.get("retry_count"),
+            "error": result.get("sql_error") or "",
+            "sql": sql,
+        }
+        reasons: list[str] = []
+
+        if result.get("status") != expect.get("status"):
+            reasons.append(
+                f"终态：期望 {expect.get('status')}，实际 {result.get('status')}"
+                + (f"（{observed['error']}）" if observed["error"] else "")
+            )
+        min_rows = expect.get("min_rows")
+        if min_rows is not None and (result.get("row_count") or 0) < min_rows:
+            reasons.append(f"行数：期望 ≥ {min_rows}，实际 {result.get('row_count') or 0}")
+
+        want_covered = expect.get("conditions_covered")
+        if want_covered is not None and covered != want_covered:
+            reasons.append(
+                f"条件覆盖：期望 {want_covered}，实际 {covered}"
+                + (f"，缺口 {kinds}" if kinds else "")
+            )
+        want_kinds = sorted({str(k) for k in (expect.get("gap_kinds") or [])})
+        if want_kinds != kinds:
+            reasons.append(f"缺口类型：期望 {want_kinds or '无'}，实际 {kinds or '无'}")
+
+        missing = _sql_contains(sql, list(expect.get("sql_contains") or []))
+        if missing:
+            reasons.append(f"SQL 缺少子串：{missing}")
+
+        want_attribution = expect.get("attribution")
+        if want_attribution is not None and attribution != want_attribution:
+            reasons.append(f"失败归因：期望 {want_attribution}，实际 {attribution}")
+
+        outcomes.append(
+            CaseOutcome(
+                case_id=case["id"],
+                question=str(case.get("intent") or ""),
+                intent=case.get("intent", ""),
+                passed=not reasons,
+                reasons=reasons,
+                observed=observed,
+            )
+        )
+    return outcomes
+
+
+# ---------------------------------------------------------------------------
 # 计分与报告
 # ---------------------------------------------------------------------------
 
@@ -1654,6 +1828,40 @@ def print_summary_simple(title: str, outcomes: list[CaseOutcome]) -> dict[str, A
     return {"total": total, "passed": passed, "skipped": skipped}
 
 
+def print_attribution(outcomes: list[CaseOutcome]) -> dict[str, Any]:
+    """失败四归因统计。四类对应四种修法，混在一起就判断不出下轮该补什么。
+
+    统计的是「这一轮真的失败了」的条目，而不是「用例没通过」的条目：本组有
+    一半用例期望的就是失败（注入坏语句验阻断与归因），按未通过计会把正常的
+    阻断排除在外，归因表永远是空的。
+    """
+    buckets: dict[str, list[str]] = {k: [] for k in ATTRIBUTIONS}
+    for outcome in outcomes:
+        if outcome.skipped:
+            continue
+        kind = str((outcome.observed or {}).get("attribution") or "none")
+        if kind == "none":
+            continue
+        buckets.setdefault(kind, []).append(outcome.case_id)
+
+    failed = sum(len(v) for v in buckets.values())
+    print(f"\n失败四归因（共 {failed} 条失败）")
+    report: dict[str, Any] = {"failed": failed, "buckets": {}}
+    for kind in ATTRIBUTIONS:
+        ids = buckets.get(kind) or []
+        label = {
+            "guard": "守卫拦下——补语义层登记表 / 字段",
+            "signature": "口径签名不符——补 metrics.yaml 的指标定义",
+            "slot": "条件没落进语句——补提示词条件清单或强断言",
+            "generate": "其余失败——换模型或调生成参数",
+        }[kind]
+        print(f"  {kind:<10} {len(ids):>2} 条  {label}")
+        if ids:
+            print(f"             用例：{'、'.join(ids)}")
+        report["buckets"][kind] = {"count": len(ids), "cases": ids}
+    return report
+
+
 def _outcome_to_dict(outcome: CaseOutcome) -> dict[str, Any]:
     """把 CaseOutcome 序列化为报告条目。
 
@@ -1713,7 +1921,7 @@ def main(argv: list[str] | None = None) -> int:
         choices=(
             "recall", "pipeline", "safety", "datalineage", "baseline",
             "drilldown", "robust", "alert", "multiturn", "advanced",
-            "outofscope", "slotcoverage", "all",
+            "outofscope", "slotcoverage", "form", "all",
         ),
         default="all",
         help="只跑某一组，默认全跑",
@@ -1753,7 +1961,7 @@ def main(argv: list[str] | None = None) -> int:
     need_graph = args.group in (
         "pipeline", "safety", "datalineage", "baseline",
         "drilldown", "robust", "alert", "multiturn", "advanced", "outofscope",
-        "slotcoverage", "all",
+        "slotcoverage", "form", "all",
     )
 
     container = None
@@ -1961,6 +2169,23 @@ def main(argv: list[str] | None = None) -> int:
             "cases": [_outcome_to_dict(o) for o in outcomes],
         }
         _assert_invariants("slotcoverage", summary, outcomes)
+        failures += summary["total"] - summary["passed"]
+
+    if args.group in ("form", "all"):
+        assert container is not None
+        cases = groups.get("form", {}).get("cases") or []
+        outcomes = run_form(cases, container)
+        print_outcomes(
+            f"form　{groups.get('form', {}).get('description', '')}", outcomes, args.verbose
+        )
+        summary = print_summary_simple("\n复杂表单查询", outcomes)
+        attribution = print_attribution(outcomes)
+        report["groups"]["form"] = {
+            **summary,
+            "attribution": attribution,
+            "cases": [_outcome_to_dict(o) for o in outcomes],
+        }
+        _assert_invariants("form", summary, outcomes)
         failures += summary["total"] - summary["passed"]
 
     if container is not None:

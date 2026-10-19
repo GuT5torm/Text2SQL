@@ -22,7 +22,13 @@ import datetime as dt
 import pytest
 
 from app.agent.nodes.validate import validate_node
-from app.agent.slot_coverage import SlotGap, check_slot_coverage
+from app.agent.slot_coverage import (
+    SlotGap,
+    check_form_conditions,
+    check_slot_coverage,
+    dimension_refs,
+)
+from app.semantic.filters import resolve_conditions
 from app.semantic.loader import Catalog
 
 
@@ -217,3 +223,214 @@ def test_validate_reports_no_gaps_when_covered(
     }
     update = validate_node(state, guard=guard, catalog=catalog, today=data_as_of)  # type: ignore[arg-type]
     assert update.get("slot_gaps") == []
+
+# ----------------------------------------------------------------------
+# 表单条件强断言（第三期）
+#
+# 这一组与上面的槽位核对不是同一件事：槽位来自模型抽取，是启发式、只记录；
+# 表单条件是用户逐条选定的，确定，因此判定收紧为「必须命中、可阻断」。
+# 收紧的代价是假告警的破坏力变大——它会把正确语句改成放弃，所以每个判定
+# 都要配一条反向用例，尤其是「过滤即分组」这条已知的误伤形态。
+# ----------------------------------------------------------------------
+
+
+def _form_sql(
+    extra_where: str = "", group_by: str = "品类", select_dim: str = "c.name AS 品类"
+) -> str:
+    """一条带品类分组的成交总额语句，条件部分由调用方拼接。"""
+    where = " AND ".join(
+        part for part in ("o.status NOT IN ('cancelled', 'pending')", extra_where) if part
+    )
+    group = f" GROUP BY {group_by}" if group_by else ""
+    dim = f"{select_dim}, " if select_dim else ""
+    return (
+        f"SELECT {dim}SUM(oi.quantity * oi.unit_price) AS 成交总额 "
+        "FROM orders o JOIN order_items oi ON oi.order_id = o.id "
+        "JOIN products p ON p.id = oi.product_id "
+        "JOIN categories c ON c.id = p.category_id "
+        f"WHERE {where}{group} ORDER BY 成交总额 DESC LIMIT 10"
+    )
+
+
+def _conds(payload: dict, catalog: Catalog) -> list[dict]:
+    """走一遍正式解析再断言，避免测试里的结构跟生产漂移。"""
+    return [c.as_dict() for c in resolve_conditions(payload, catalog)]
+
+
+FULL_PAYLOAD: dict = {
+    "metric": "gmv",
+    "dimensions": ["category_name"],
+    "conditions": [
+        {"field": "orders.region", "op": "in", "value": ["华东", "华南"]},
+        {"field": "orders.channel", "op": "eq", "value": "app"},
+        {
+            "field": "orders.created_at",
+            "op": "between",
+            "value": "2026-01-01",
+            "value_to": "2026-07-01",
+        },
+    ],
+    "top_n": 10,
+}
+
+FULL_WHERE = (
+    "o.region IN ('华东', '华南') AND o.channel = 'app' "
+    "AND o.created_at >= '2026-01-01' AND o.created_at < '2026-07-01'"
+)
+
+
+def test_form_conditions_covered(catalog: Catalog) -> None:
+    gaps = check_form_conditions(
+        _form_sql(FULL_WHERE), _conds(FULL_PAYLOAD, catalog), catalog=catalog
+    )
+    assert gaps == []
+
+
+def test_form_condition_missing_value(catalog: Catalog) -> None:
+    """漏掉一整个条件：取值不在语句里。"""
+    where = (
+        "o.region IN ('华东', '华南') "
+        "AND o.created_at >= '2026-01-01' AND o.created_at < '2026-07-01'"
+    )
+    gaps = check_form_conditions(
+        _form_sql(where), _conds(FULL_PAYLOAD, catalog), catalog=catalog
+    )
+    assert [g.kind for g in gaps] == ["form_condition"]
+    assert "下单渠道" in gaps[0].expected
+
+
+def test_form_condition_partial_range(catalog: Catalog) -> None:
+    """区间只写一侧算缺口：`>= start` 单独存在时统计区间没有上界。"""
+    where = (
+        "o.region IN ('华东', '华南') AND o.channel = 'app' AND o.created_at >= '2026-01-01'"
+    )
+    gaps = check_form_conditions(
+        _form_sql(where), _conds(FULL_PAYLOAD, catalog), catalog=catalog
+    )
+    assert len(gaps) == 1
+    assert "下单时间" in gaps[0].expected
+    assert "2026-07-01" in gaps[0].detail
+
+
+def test_form_condition_accepts_closed_upper_bound(catalog: Catalog) -> None:
+    """左闭右开的 `< '2026-07-01'` 与 `<= '2026-06-30'` 等价，不算缺口。
+
+    不认这个写法属于误伤：模型写区间上界时几乎都用 <=。
+    """
+    where = (
+        "o.region IN ('华东', '华南') AND o.channel = 'app' "
+        "AND o.created_at >= '2026-01-01' AND o.created_at <= '2026-06-30'"
+    )
+    gaps = check_form_conditions(
+        _form_sql(where), _conds(FULL_PAYLOAD, catalog), catalog=catalog
+    )
+    assert gaps == []
+
+
+def test_form_condition_filtered_and_grouped_is_not_a_gap(catalog: Catalog) -> None:
+    """过滤即分组：按 region 过滤又按 region 分组，不要求再写 WHERE。
+
+    这是 validate 里记过教训的假告警形态。强断言一旦误伤，后续所有基于它的
+    判断（阻断、修正、归因）都不可信，所以这条反向用例必须常驻。
+    """
+    payload = {
+        "metric": "gmv",
+        "dimensions": ["region"],
+        "conditions": [{"field": "orders.region", "op": "in", "value": ["华东", "华南"]}],
+    }
+    sql = (
+        "SELECT o.region AS 大区, SUM(oi.quantity * oi.unit_price) AS 成交总额 "
+        "FROM orders o JOIN order_items oi ON oi.order_id = o.id "
+        "WHERE o.region IN ('华东', '华南') GROUP BY 大区 LIMIT 10"
+    )
+    gaps = check_form_conditions(
+        sql,
+        _conds(payload, catalog),
+        catalog=catalog,
+        grouped=dimension_refs(["region"], catalog),
+    )
+    assert gaps == []
+
+
+def test_form_condition_missing_join(catalog: Catalog) -> None:
+    """跨表条件漏 JOIN：取值在、表不在，过滤会落在错误的列上或报无此列。"""
+    payload = {
+        "metric": "gmv",
+        "conditions": [{"field": "users.level", "op": "eq", "value": "gold"}],
+    }
+    sql = (
+        "SELECT SUM(oi.quantity * oi.unit_price) AS 成交总额 FROM orders o "
+        "JOIN order_items oi ON oi.order_id = o.id WHERE level = 'gold' LIMIT 10"
+    )
+    gaps = check_form_conditions(sql, _conds(payload, catalog), catalog=catalog)
+    assert len(gaps) == 1
+    assert "users" in gaps[0].detail
+
+
+def test_form_condition_unresolvable_field(catalog: Catalog) -> None:
+    """登记名解析不出表与列时算缺口，不静默跳过。
+
+    静默跳过会让「条件没进语句」和「条件没被核对」变成同一种表现，排查时
+    无从下手。
+    """
+    gaps = check_form_conditions(
+        _form_sql(),
+        [{"field": "broken", "op": "eq", "values": ["x"], "display": "坏字段"}],
+    )
+    assert len(gaps) == 1
+    assert "无法核对" in gaps[0].detail
+
+
+@pytest.mark.usefixtures("require_mock")
+def test_validate_blocks_form_path(catalog: Catalog, guard: object) -> None:
+    """表单路径缺口必须阻断：条件确定，漏写就是答非所问。"""
+    state = {
+        "sql": _form_sql("o.region IN ('华东', '华南')"),
+        "slots": {},
+        "query_source": "form",
+        "form_query": FULL_PAYLOAD,
+        "form_conditions": _conds(FULL_PAYLOAD, catalog),
+        "retry_count": 0,
+        "fix_history": [],
+    }
+    update = validate_node(state, guard=guard, catalog=catalog)  # type: ignore[arg-type]
+    assert update.get("sql_error"), "表单条件缺口必须阻断"
+    assert "表单条件" in update["sql_error"]
+    kinds = [g["kind"] for g in (update.get("slot_gaps") or [])]
+    assert kinds == ["form_condition", "form_condition"]
+    assert "下单渠道" in update["sql_error"] and "下单时间" in update["sql_error"]
+
+
+@pytest.mark.usefixtures("require_mock")
+def test_validate_passes_form_path_when_covered(catalog: Catalog, guard: object) -> None:
+    state = {
+        "sql": _form_sql(FULL_WHERE),
+        "slots": {"filters": [{"field": "下单渠道", "value": "App"}]},
+        "query_source": "form",
+        "form_query": FULL_PAYLOAD,
+        "form_conditions": _conds(FULL_PAYLOAD, catalog),
+        "retry_count": 0,
+        "fix_history": [],
+    }
+    update = validate_node(state, guard=guard, catalog=catalog)  # type: ignore[arg-type]
+    assert update.get("sql_error") is None
+    # 槽位核对的 filter 类让位给强断言：口语「App」对不上库内标准值 app，
+    # 两套判定并存会给出互相矛盾的结论
+    assert update.get("slot_gaps") == []
+
+
+@pytest.mark.usefixtures("require_mock")
+def test_free_chat_path_is_not_blocked_by_form_assertion(
+    catalog: Catalog, guard: object
+) -> None:
+    """自由提问不带 form_conditions，强断言不生效，维持只记录。"""
+    state = {
+        "sql": _form_sql(),
+        "slots": {"filters": [{"field": "下单渠道", "value": "App"}]},
+        "query_source": "chat",
+        "retry_count": 0,
+        "fix_history": [],
+    }
+    update = validate_node(state, guard=guard, catalog=catalog)  # type: ignore[arg-type]
+    assert update.get("sql_error") is None
+    assert [g["kind"] for g in (update.get("slot_gaps") or [])] == ["filter"]

@@ -23,6 +23,7 @@ EVENT_GUARD_BLOCK = "sql_guard_block"  # 守卫拒绝，语句不会被执行
 EVENT_GUARD_REWRITE = "sql_guard_rewrite"  # 守卫通过但改写了语句（R6 补 LIMIT）
 EVENT_GUARD_PASS = "sql_guard_pass"  # 通过且未改写
 EVENT_METRIC_BLOCK = "sql_metric_block"  # 安全过关但口径签名不符
+EVENT_FORM_BLOCK = "sql_form_condition_block"  # 表单条件未全部落到语句
 EVENT_SQL_EXECUTE = "sql_execute"  # 实际执行成功
 EVENT_SQL_ERROR = "sql_execute_error"  # 执行失败（含超时）
 
@@ -31,6 +32,7 @@ EVENT_TYPES: tuple[str, ...] = (
     EVENT_GUARD_REWRITE,
     EVENT_GUARD_PASS,
     EVENT_METRIC_BLOCK,
+    EVENT_FORM_BLOCK,
     EVENT_SQL_EXECUTE,
     EVENT_SQL_ERROR,
 )

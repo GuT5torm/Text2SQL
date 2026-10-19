@@ -34,6 +34,10 @@ logger = logging.getLogger(__name__)
 # 负责，槽位里的指标是中文显示名，直接拿它跟 SQL 比对会与签名校验重复且更不准。
 GAP_KINDS: tuple[str, ...] = ("dimension", "filter", "time_range", "top_n", "order_by")
 
+# 表单条件的缺口类型。不并入 GAP_KINDS：那五个是自由提问的槽位类型，核对结果
+# 只记录不阻断；表单条件确定，缺口要阻断，两类不能共用一套开关。
+FORM_GAP_KIND = "form_condition"
+
 
 @dataclass(frozen=True)
 class SlotGap:
@@ -411,6 +415,195 @@ def _filter_gaps(tree: exp.Expression, slots: dict[str, Any], catalog: Any) -> l
     return gaps
 
 
+def check_form_conditions(
+    sql: str,
+    conditions: list[Any],
+    *,
+    catalog: Any = None,
+    grouped: set[str] | None = None,
+) -> list[SlotGap]:
+    """表单条件逐条比对 SQL。缺口即阻断（表单路径），自由提问路径不调用。
+
+    与 `_filter_gaps` 的区别在两处，都是「槽位确定」带来的：
+
+    1. 候选集不扩展。自由提问的过滤值来自模型抽取，口语叫法进不了 SQL，需要
+       `value_synonyms` 兜一层；表单值是库内标准值，SQL 里若不是这个值就是漏了，
+       扩候选等于把漏写判成命中；
+    2. 字段必须精确命中。自由提问下「取值对、字段不确定」时退回只比值，表单
+       下字段是选定的，退比会放过「过滤落在另一列上」这类静默错误。
+    """
+    if not conditions or not (sql or "").strip():
+        return []
+
+    try:
+        tree = sqlglot.parse_one(sql, dialect="sqlite")
+    except Exception as exc:  # pragma: no cover - 守卫已先拦过一遍
+        logger.debug("表单条件强断言跳过，语句无法解析：%s", exc)
+        return []
+
+    predicates = _predicates(tree)
+    aliases = _alias_map(tree)
+    grouped_refs = grouped or set()
+    gap_list: list[SlotGap] = []
+
+    for raw in conditions:
+        if not isinstance(raw, dict):
+            continue
+        field = str(raw.get("field") or "").strip()
+        table = str(raw.get("table") or "").strip()
+        column = str(raw.get("column") or "").strip()
+        if not table and "." in field:
+            table, column = field.split(".", 1)
+        if not column:
+            # 登记名解析不出来是配置问题，不是语句问题。算缺口而不是静默跳过：
+            # 静默跳过会让「条件没进语句」与「条件没被核对」变成同一种表现。
+            gap_list.append(
+                SlotGap(
+                    kind=FORM_GAP_KIND,
+                    expected=f"满足条件「{_describe_form_condition(raw)}」",
+                    detail=f"登记名 {field or '（空）'} 解析不出表与列，无法核对",
+                )
+            )
+            continue
+
+        ref = f"{table}.{column}".lower()
+        if ref in grouped_refs:
+            # 过滤即分组：按该列分组时取值已经体现在分组结果里，再要求 WHERE
+            # 是假告警。validate 的教训记着——假告警会把正确语句改成放弃。
+            continue
+
+        wanted = _wanted_values(raw)
+        if not wanted:
+            continue
+
+        literals = _column_literals(predicates, aliases, ref)
+        missing = [w for w in wanted if not (set(w) & literals)]
+        if missing:
+            gap_list.append(
+                SlotGap(
+                    kind=FORM_GAP_KIND,
+                    expected=f"满足条件「{_describe_form_condition(raw)}」",
+                    detail=(
+                        "语句里没有这个条件的取值"
+                        if len(missing) == len(wanted)
+                        else "语句只写了部分取值：" + "、".join(sorted(w[0] for w in missing))
+                    ),
+                )
+            )
+            continue
+
+        join_gap = _join_gap(tree, raw, table)
+        if join_gap is not None:
+            gap_list.append(join_gap)
+
+    return gap_list
+
+
+def dimension_refs(tokens: list[Any], catalog: Any) -> set[str]:
+    """维度写法 → 「表.列」集合，供强断言排除「过滤即分组」的假告警形态。"""
+    index = _dimension_index(catalog)
+    if not index:
+        return set()
+    out: set[str] = set()
+    for token in tokens or []:
+        resolved = _lookup_dimension(str(token).strip(), index)
+        if resolved is None:
+            continue
+        table, column = resolved
+        out.add(f"{table}.{column}".lower() if table else column.lower())
+    return out
+
+
+def _describe_form_condition(raw: dict[str, Any]) -> str:
+    """条件的中文表述。与问句渲染同源，缺口文案与界面回显说的是同一件事。"""
+    display = str(raw.get("display") or raw.get("field") or "该字段")
+    op = str(raw.get("op") or "")
+    values = [str(v) for v in (raw.get("values") or []) if v]
+    if op in ("eq", "in") and values:
+        if len(values) == 1:
+            return f"{display}为{values[0]}"
+        return f"{display}属于{'、'.join(values)}"
+    start = str(raw.get("start") or "")
+    end = str(raw.get("end") or "")
+    if op == "between":
+        return f"{display}从 {start} 到 {end}"
+    if op == "gte":
+        return f"{display}不早于 {start}"
+    if op == "lte":
+        return f"{display}不晚于 {end}"
+    return display
+
+
+def _wanted_values(raw: dict[str, Any]) -> list[tuple[str, ...]]:
+    """条件要求的取值，每项是一组等价写法（任一组命中即算覆盖）。"""
+    op = str(raw.get("op") or "")
+    values = [str(v) for v in (raw.get("values") or []) if v]
+    if op in ("eq", "in"):
+        return [(v,) for v in values]
+    start = str(raw.get("start") or "")
+    end = str(raw.get("end") or "")
+    if op == "between":
+        return [(start,), (end, _day_before(end))]
+    if op == "gte" and start:
+        return [(start,)]
+    if op == "lte" and end:
+        return [(end, _day_before(end))]
+    return []
+
+
+def _day_before(value: str) -> str:
+    """左闭右开的结束日对应的「闭区间写法」取值。
+
+    表单下发的区间是 `< '2026-07-01'`，模型写成 `<= '2026-06-30'` 语义等价。
+    不接受就属于误伤——那类写法在真实输出里很常见。
+    """
+    try:
+        return (dt.date.fromisoformat(value) - dt.timedelta(days=1)).isoformat()
+    except ValueError:
+        return value
+
+
+def _column_literals(
+    predicates: list[exp.Expression], aliases: dict[str, str], ref: str
+) -> set[str]:
+    """落在指定列上的全部字面量，跨 WHERE / HAVING 取并集。
+
+    取并集而不是逐个条件判断：区间通常写成两个条件（`>=` 与 `<`），只盯一个
+    节点会把「写了起止但分开写」误判成只写了一半。
+    """
+    column = ref.rpartition(".")[2]
+    out: set[str] = set()
+    for node in predicates:
+        refs = _predicate_refs(node, aliases)
+        if not any(r == ref or r == column or r.endswith("." + column) for r in refs):
+            continue
+        out |= _literal_values(node)
+    return out
+
+
+def _join_gap(tree: exp.Expression, raw: dict[str, Any], table: str) -> SlotGap | None:
+    """跨表条件是否带上了 JOIN。
+
+    漏 JOIN 时若列名恰好存在于 FROM 里的另一张表，语句照常执行、过滤落在错误
+    的列上，全程无报错——这是 F4 最难发现的一面。
+    """
+    join = str(raw.get("join") or "").strip()
+    if not join:
+        return None
+    needed = {table.lower()}
+    for match in re.finditer(r"([A-Za-z_][A-Za-z0-9_]*)\.[A-Za-z_][A-Za-z0-9_]*", join):
+        needed.add(match.group(1).lower())
+    present = {str(t.name or "").lower() for t in tree.find_all(exp.Table)}
+    missing = sorted(t for t in needed if t not in present)
+    if not missing:
+        return None
+    return SlotGap(
+        kind=FORM_GAP_KIND,
+        expected=f"条件「{_describe_form_condition(raw)}」需关联 {'、'.join(sorted(needed))}",
+        detail=f"语句里没有表 {'、'.join(missing)}，条件会落在错误的列上或无此列",
+    )
+
+
 # ---------------------------------------------------------------------------
 # 时间
 # ---------------------------------------------------------------------------
@@ -561,4 +754,11 @@ def _norm(text: str) -> str:
     return text.lower()
 
 
-__all__ = ["GAP_KINDS", "SlotGap", "check_slot_coverage"]
+__all__ = [
+    "FORM_GAP_KIND",
+    "GAP_KINDS",
+    "SlotGap",
+    "check_form_conditions",
+    "check_slot_coverage",
+    "dimension_refs",
+]
