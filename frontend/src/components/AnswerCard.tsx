@@ -7,6 +7,7 @@ import { AnswerText } from './AnswerText';
 import { ChartPanel } from './ChartPanel';
 import { DefinitionPanel } from './DefinitionPanel';
 import { ExportMenu } from './ExportMenu';
+import { FailureAttributionNotice } from './FailureAttribution';
 import { FeedbackBar } from './FeedbackBar';
 import { FindingList } from './FindingList';
 import { MetricBadge } from './MetricBadge';
@@ -205,7 +206,14 @@ export function AnswerCard({
           type="error"
           showIcon
           message={result.retry_count ? `重试 ${result.retry_count} 次后仍未成功` : '未能生成可执行查询'}
-          description="建议缩小时间范围、减少关联维度，或换一种更具体的问法。"
+          // 有归因时按归因给修法方向：四类对应四种改法，笼统的「换种问法」
+          // 会让人对着口径问题去改问句
+          description={
+            <FailureAttributionNotice
+              attribution={result.failure_attribution}
+              fallback="建议缩小时间范围、减少关联维度，或换一种更具体的问法。"
+            />
+          }
           style={{ marginTop: 8 }}
         />
       )}

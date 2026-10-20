@@ -86,6 +86,8 @@ export function turnToChatTurn(turn: TurnItem): ChatTurn {
     rewritten_question: turn.rewritten_question,
     // FR-E-4：修正历史。老库迁移记录缺这列时降级为空数组（不展示该项）
     fix_history: turn.fix_history ?? [],
+    // 失败归因：随轮次落库在 metrics_json，回看失败轮次仍能给出归因与修法
+    failure_attribution: turn.metrics?.failure_attribution ?? null,
   };
   return {
     key: `turn-${turn.id}`,

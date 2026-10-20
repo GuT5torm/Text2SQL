@@ -29,6 +29,7 @@ import {
 } from '@/api/formQuery';
 import { fetchDimensions, fetchMetrics, type DimensionDoc, type MetricDoc } from '@/api/semantic';
 import { createSession } from '@/api/session';
+import { FailureAttributionNotice } from '@/components/FailureAttribution';
 import { ResultTable } from '@/components/ResultTable';
 import type { ChatResult } from '@/api/types';
 
@@ -501,7 +502,19 @@ export function FormQueryPage({ onTurnComplete }: Props) {
         ) : (
           <Space direction="vertical" size={10} style={{ width: '100%' }}>
             {result.status !== 'ok' && (
-              <Alert type="warning" showIcon message={`本轮未取到数据（${result.status}）`} description={result.sql_error || result.answer} />
+              <Alert
+                type="warning"
+                showIcon
+                message={`本轮未取到数据（${result.status}）`}
+                description={
+                  <Space direction="vertical" size={2} style={{ width: '100%' }}>
+                    {(result.sql_error || result.answer) && (
+                      <Text style={{ fontSize: 13 }}>{result.sql_error || result.answer}</Text>
+                    )}
+                    <FailureAttributionNotice attribution={result.failure_attribution} />
+                  </Space>
+                }
+              />
             )}
             {result.original_question && (
               <Text type="secondary" style={{ fontSize: 12 }}>

@@ -202,6 +202,21 @@ export interface FixHistoryItem {
   error: string;
 }
 
+/**
+ * 失败归因（与 eval 报表同一套编码）。
+ *
+ * 四类对应四种修法，界面上同时给出标签与建议：只给标签等于让用户自己去猜
+ * 该改什么。成功轮为 null。
+ */
+export interface FailureAttribution {
+  /** guard 守卫拦下 / signature 口径签名不符 / slot 条件没落进语句 / generate 生成侧未收敛 */
+  kind: 'guard' | 'signature' | 'slot' | 'generate';
+  label: string;
+  suggestion: string;
+  /** 判定依据：守卫规则编号、口径报错原文或「无更具体的失败证据」 */
+  evidence: string;
+}
+
 /** SSE 的 result 帧，也是 /api/chat/sync 的返回体。 */
 export interface ChatResult {
   status: ResultStatus;
@@ -286,6 +301,8 @@ export interface ChatResult {
   rewritten_question?: string;
   /** FR-E-4：修正历史。空数组表示未发生过修正（fix 节点未触发） */
   fix_history?: FixHistoryItem[];
+  /** 失败归因。仅 status 为 error 时非空，成功轮为 null */
+  failure_attribution?: FailureAttribution | null;
 }
 
 export interface SessionItem {
@@ -304,7 +321,15 @@ export interface TurnItem {
   question: string;
   answer: string;
   sql: string | null;
-  metrics: { metric_used?: string[]; caveats?: string[]; time_range?: TimeRange | null } | null;
+  metrics:
+    | {
+        metric_used?: string[];
+        caveats?: string[];
+        time_range?: TimeRange | null;
+        /** 失败归因随轮次落库（与 slot_gaps 同路），回看失败轮次时可用 */
+        failure_attribution?: FailureAttribution | null;
+      }
+    | null;
   chart: ChartPayload | null;
   result: { columns?: string[]; rows?: Record<string, unknown>[]; row_count?: number } | null;
   row_count: number;
@@ -332,6 +357,8 @@ export interface TurnItem {
   rewritten_question?: string;
   /** FR-E-4：修正历史。空数组表示未发生过修正 */
   fix_history?: FixHistoryItem[];
+  /** 失败归因。老库迁移记录缺此字段时按 undefined 降级，不渲染归因条 */
+  failure_attribution?: FailureAttribution | null;
 }
 
 export interface SessionDetail extends SessionItem {

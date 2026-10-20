@@ -107,6 +107,9 @@ def persist_turn(
                         # 槽位覆盖：语句没落实的槽位。放进 metrics_json 与
                         # number_checks 同路，历史回看不必新增列
                         "slot_gaps": result.get("slot_gaps") or [],
+                        # 失败归因与 slot_gaps 同路落库：回看失败轮次时界面仍
+                        # 能给出「哪里出的、该改什么」，不必重跑一遍
+                        "failure_attribution": result.get("failure_attribution"),
                     }
                 ),
                 chart_json=dump_json(result.get("chart")) if result.get("chart") else None,

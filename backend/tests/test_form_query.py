@@ -471,3 +471,58 @@ def test_preview_rejects_bad_payload(client: Any) -> None:
     )
     assert resp.status_code == 400
     assert "orders.coupon_id" in resp.json()["detail"]["errors"][0]
+
+# ---------------------------------------------------------------------------
+# 七、失败归因的接口出参
+# ---------------------------------------------------------------------------
+
+
+def test_success_turn_has_no_attribution(client: Any, require_mock: None) -> None:
+    """成功轮不产归因。
+
+    多返回一个空对象等于让每个消费方（前端两处入口、历史回看）都得多处理
+    一种空态，而起因只是「这一轮没失败」。
+    """
+    sid = client.post("/api/session", json={"title": "归因用例"}).json()["id"]
+    resp = client.post("/api/query/form", json={**BASE_PAYLOAD, "session_id": sid})
+    assert resp.status_code == 200
+    assert resp.json()["failure_attribution"] is None
+
+
+def test_failed_turn_carries_attribution(
+    client: Any, require_mock: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """失败轮的接口出参带归因，编码与 eval 报表同源。
+
+    注入「成交总额写成销量」的语句：守卫放行（表名列名都登记过），条件核对
+    无从谈起（根本没走到那一步），只有口径签名能抓到它。归到 signature 而不
+    是笼统的失败，界面才知道该补指标定义而不是去改问句。
+    """
+    from app.api.deps import get_container
+
+    container = get_container()
+    original = container.gateway.complete_json
+
+    def patched(prompt: str, schema: type, **kwargs: Any):
+        if schema is SqlDraft:
+            return SqlDraft(
+                sql=(
+                    "SELECT o.region AS 区域, SUM(oi.quantity) AS 成交总额"
+                    " FROM orders o JOIN order_items oi ON oi.order_id = o.id"
+                    " GROUP BY 区域"
+                ),
+                reasoning="注入的语句",
+                metric_used=[],
+            )
+        return original(prompt, schema, **kwargs)
+
+    monkeypatch.setattr(container.gateway, "complete_json", patched)
+    sid = client.post("/api/session", json={"title": "归因用例"}).json()["id"]
+    resp = client.post("/api/query/form", json={**BASE_PAYLOAD, "session_id": sid})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["status"] == "error"
+    attribution = data["failure_attribution"]
+    assert attribution["kind"] == "signature"
+    assert attribution["label"] == "口径签名不符"
+    assert "metrics.yaml" in attribution["suggestion"]

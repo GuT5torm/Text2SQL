@@ -31,6 +31,7 @@ from typing import Any, Callable
 from langchain_core.messages import AIMessage
 from langgraph.graph import END, StateGraph
 
+from app.agent.failure_attribution import attribute_failure
 from app.agent.nodes.enrich import enrich_node
 from app.agent.nodes.execute import execute_node
 from app.agent.nodes.fix import fix_node
@@ -501,6 +502,9 @@ def summarize_result(state: dict[str, Any]) -> dict[str, Any]:
         # fix_history 在 execute / validate / fix 三处累加，结构 [{stage, error}]。
         # 之前只渲染进 fix 节点 prompt，没外露给前端，FR-E-4 要求可见可核对。
         "fix_history": list(state.get("fix_history") or []),
+        # —— 失败归因：与 eval 报表共用 agent/failure_attribution.py 的编码 ——
+        # 成功轮为 None：多返回一个空对象只会让前端多一个判断分支。
+        "failure_attribution": attribute_failure(state),
     }
 
 

@@ -61,6 +61,12 @@ import yaml  # noqa: E402
 
 from app.agent.checkpointer import thread_config  # noqa: E402
 from app.agent.drilldown import build_drilldown  # noqa: E402
+from app.agent.failure_attribution import (  # noqa: E402
+    ATTRIBUTIONS as ATTRIBUTION_KINDS,
+    LABELS,
+    SUGGESTIONS,
+    attribute_failure,
+)
 from app.agent.form_query import (  # noqa: E402
     build_form_payload,
     build_slots_from_form,
@@ -1585,25 +1591,17 @@ def run_slotcoverage(cases: list[dict[str, Any]], container: Any) -> list[CaseOu
 # 失败四归因。四类对应四种不同的修法，混在一起统计就无法判断下一轮该补什么：
 # 补语义层登记（guard）、补指标定义（signature）、补提示词与强断言（slot）、
 # 换模型或调参数（generate）。
-ATTRIBUTIONS: tuple[str, ...] = ("guard", "signature", "slot", "generate")
+#
+# 编码与判定逻辑来自 app/agent/failure_attribution.py——接口结果里的
+# failure_attribution 与这里的归因列必须是同一个判断，否则同一轮失败会在
+# 报表与界面上给出两种说法。
+ATTRIBUTIONS: tuple[str, ...] = ATTRIBUTION_KINDS
 
 
 def _attribute(result: dict[str, Any]) -> str:
-    """把一次失败归到四类之一。判定按「证据强弱」排序，不是按发生顺序。
-
-    slot 排最前是因为它的证据最硬（缺口类型写在结果里）；guard 有 R 编号；
-    signature 只有文案关键字可依；三者都不是时才落 generate——那一类实际是
-    「没有更具体的证据」，把它当兜底而不是当结论。
-    """
-    gaps = [str(g.get("kind")) for g in (result.get("slot_gaps") or [])]
-    error = str(result.get("sql_error") or result.get("error") or "")
-    if "form_condition" in gaps or "表单条件未全部落到语句" in error:
-        return "slot"
-    if re.search(r"\bR\d\b", error) or "守卫" in error:
-        return "guard"
-    if "口径" in error or "签名" in error:
-        return "signature"
-    return "generate"
+    """把一次失败归到四类之一，非失败轮返回 "none"。"""
+    attribution = attribute_failure(result)
+    return attribution["kind"] if attribution else "none"
 
 
 def _invoke_form(
@@ -1849,12 +1847,8 @@ def print_attribution(outcomes: list[CaseOutcome]) -> dict[str, Any]:
     report: dict[str, Any] = {"failed": failed, "buckets": {}}
     for kind in ATTRIBUTIONS:
         ids = buckets.get(kind) or []
-        label = {
-            "guard": "守卫拦下——补语义层登记表 / 字段",
-            "signature": "口径签名不符——补 metrics.yaml 的指标定义",
-            "slot": "条件没落进语句——补提示词条件清单或强断言",
-            "generate": "其余失败——换模型或调生成参数",
-        }[kind]
+        # 标签与修法建议取自同一份常量表，界面上显示的是同一句话
+        label = f"{LABELS[kind]}——{SUGGESTIONS[kind]}"
         print(f"  {kind:<10} {len(ids):>2} 条  {label}")
         if ids:
             print(f"             用例：{'、'.join(ids)}")
