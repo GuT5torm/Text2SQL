@@ -63,6 +63,32 @@ flowchart TD
 
 修正与空结果回灌各有独立配额，分别对应 `SQL_MAX_RETRY` 与 `SQL_MAX_EMPTY_RETRY`（配置见[第八节](#八配置项)）；四种终态与提示条的含义见[第七节](#七结果解读)。
 
+## 示例：一次口径召回
+
+问句「上个月华东区各品类的成交总额」交给语义层，`/api/semantic/recall` 返回如下（真实输出）：
+
+```json
+{
+  "question": "上个月华东区各品类的成交总额",
+  "metrics": ["gmv"],
+  "metric_displays": ["成交总额"],
+  "tables": ["orders", "categories", "order_items", "products"],
+  "dimensions": ["category_name", "region"],
+  "matched_terms": ["成交总额"],
+  "value_hints": ["「华东」对应 orders.region = '华东'"],
+  "time_range": {
+    "label": "上个月",
+    "start": "2026-09-01",
+    "end": "2026-10-01",
+    "resolved": "2026-09-01 起至 2026-09-30 止"
+  }
+}
+```
+
+这一段不经模型：业务说法到指标的映射、维度的识别、筛选值对应到哪个字段、相对时间换算成具体区间，都由 `semantic/` 下的三份 YAML 与纯函数完成，因此同一问句在任何机器上结果一致。两点值得注意——`start` 与 `end` 构成左闭右开区间；「上个月」按数据截止日换算，本例截止日为 2026-10-14，故落到 2026-09，与运行时的系统日期无关。
+
+SQL 生成与结论撰写由模型承担。未配置密钥时这两步走桩实现，SQL 取自固定模板、结论为占位文案，不代表模型能力；配置方法见[第三节](#三安装与初始化)。
+
 ## 目录
 
 | | |
@@ -137,6 +163,17 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy RemoteSigned
 .\.venv\Scripts\python.exe <脚本或模块>
 ```
 
+Linux 与 macOS 下同样的三步：
+
+```bash
+cd /path/to/Text2SQL/backend
+python3 -m venv .venv
+source .venv/bin/activate
+python3 -m pip install -r requirements.txt
+```
+
+后文的 PowerShell 命令在 Unix 下有两处替换：解释器 `.\.venv\Scripts\python.exe` 换成 `.venv/bin/python`（激活环境后直接写 `python3` 亦可），路径分隔符 `\` 换成 `/`，即 `data\seed.py` 写成 `data/seed.py`。
+
 `requirements.txt` 的版本号全部写死而非写下限。SQL 守卫的判断依赖 sqlglot 的 AST 节点命名，langgraph 1.x 的图编译与 Checkpointer 接口也有过破坏性变更，浮动版本会让同一份代码装出不同的行为。升级依赖时逐个升级，并跑一遍冒烟脚本与单元测试确认链路未断。
 
 ### 3.2 前端依赖
@@ -155,6 +192,8 @@ cd C:\Text2SQL\backend
 Copy-Item .env.example .env
 ```
 
+Unix 下为 `cp .env.example .env`。
+
 配置从 `backend/.env` 读取，代码中不出现密钥字面量。`.env` 已被版本库排除，可安全填写真实密钥。
 
 > [!IMPORTANT]
@@ -170,6 +209,8 @@ Copy-Item .env.example .env
 ```powershell
 .\.venv\Scripts\python.exe data\seed.py
 ```
+
+Unix 下为 `.venv/bin/python data/seed.py`。
 
 脚本以固定随机种子生成 2000 名用户、500 件商品、12000 笔订单，写入 `backend/data/ecommerce.db`（约 3.4 MB），订单时间覆盖 2025-01-01 至造数当日。同一份代码在任何机器上生成的库完全一致，评测结果才可复现。
 
