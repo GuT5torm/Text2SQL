@@ -1,10 +1,78 @@
+<div align="center">
+
 # Text2SQL 电商数据分析 Agent
 
 用自然语言提问电商经营数据，系统自动完成口径匹配、SQL 生成、安全校验、只读执行、图表绘制与结论撰写。
 
+[![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?style=flat-square&logo=python&logoColor=white)](https://www.python.org/)
+[![Node.js](https://img.shields.io/badge/Node.js-18%2B-339933?style=flat-square&logo=node.js&logoColor=white)](https://nodejs.org/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-ASGI-009688?style=flat-square&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
+[![LangGraph](https://img.shields.io/badge/LangGraph-1.x-1C3C3C?style=flat-square)](https://langchain-ai.github.io/langgraph/)
+[![React](https://img.shields.io/badge/React-18-087EA4?style=flat-square&logo=react&logoColor=white)](https://react.dev/)
+[![SQLite](https://img.shields.io/badge/SQLite-只读-003B57?style=flat-square&logo=sqlite&logoColor=white)](https://www.sqlite.org/)
+
+![指标](https://img.shields.io/badge/指标-7-blue?style=flat-square)
+![接口](https://img.shields.io/badge/接口-32-blue?style=flat-square)
+![单元测试](https://img.shields.io/badge/单元测试-548%20通过-brightgreen?style=flat-square)
+![评测集](https://img.shields.io/badge/评测集-104%2F109-brightgreen?style=flat-square)
+
+<sub>后两项为 2026-10-16 实测基线（桩实现模式，时间锚点 2026-10-14），详见[第九节](#九测试与评测)。</sub>
+
+</div>
+
+---
+
 与「把建表语句交给大模型直接写 SQL」的做法相比，本项目的差别集中在三处：指标口径写在语义层配置里而非由模型临场判断，生成的语句必须先通过 SQL 安全沙箱再执行，本轮采用的统计范围会随结果一并返回。因此同一个问题在不同时间、不同机器上的口径一致，每一个数字都能追溯到具体的表与条件。
 
 系统面向单机演示与教学实训，业务库以只读方式连接，不提供数据写入能力。
+
+## 处理链路
+
+```mermaid
+flowchart TD
+    Q["用户提问"] --> INT{"意图识别"}
+    INT -->|闲聊| CC["常规回复 · 终态 chitchat"]
+    INT -->|信息不足| CL["澄清追问 · 终态 clarify"]
+
+    subgraph SEM["语义层 · 纯函数"]
+        RC["口径召回"] --> RC2["指标 / 表 / 同义词 / 时间区间"]
+    end
+
+    INT -->|取数| RC
+    RC2 --> GEN["SQL 生成"]
+    GEN --> GD{"安全沙箱 · R1–R7"}
+    GD -->|拦截| FIX["修正节点<br/>校验与执行共享配额 3 次"]
+    GD -->|R6 自动改写| EX["只读执行 · R8 中断"]
+    GD -->|通过| EX
+    EX -->|执行失败| FIX
+    EX -->|空结果 · 独立配额 1 次| GEN
+    FIX -->|配额内| GEN
+    FIX -->|配额耗尽| ERR["终态 error"]
+    EX --> RS["结果集"]
+    RS --> CH["图表决策 · 模型优先，规则兜底"]
+    RS --> AN["结论撰写"]
+    AN --> RB["数字回溯校验"]
+    RB --> OK["终态 ok"]
+    OK --> CARD["回答卡片<br/>结论 · 口径标签 · 图表 · 明细表"]
+
+    style SEM fill:#f5f7fa,stroke:#8898aa,color:#24292f
+    style GD fill:#fff8e6,stroke:#d4a72c,color:#24292f
+    style FIX fill:#fdf0ef,stroke:#c9524a,color:#24292f
+    style CARD fill:#eef7ee,stroke:#4a8a55,color:#24292f
+```
+
+修正与空结果回灌各有独立配额，分别对应 `SQL_MAX_RETRY` 与 `SQL_MAX_EMPTY_RETRY`（配置见[第八节](#八配置项)）；四种终态与提示条的含义见[第七节](#七结果解读)。
+
+## 目录
+
+| | |
+|---|---|
+| [一、系统能力与边界](#一系统能力与边界) | [七、结果解读](#七结果解读) |
+| [二、环境要求](#二环境要求) | [八、配置项](#八配置项) |
+| [三、安装与初始化](#三安装与初始化) | [九、测试与评测](#九测试与评测) |
+| [四、启动](#四启动) | [十、日常运维](#十日常运维) |
+| [五、启动自检](#五启动自检) | [十一、常见问题](#十一常见问题) |
+| [六、界面使用](#六界面使用) | [十二、目录结构](#十二目录结构) · [十三、相关文档](#十三相关文档) |
 
 ---
 
@@ -89,12 +157,13 @@ Copy-Item .env.example .env
 
 配置从 `backend/.env` 读取，代码中不出现密钥字面量。`.env` 已被版本库排除，可安全填写真实密钥。
 
-首次启动最容易出问题的一项是桩实现与密钥的关系：
-
-- `.env` 中 `LLM_API_KEY` 留空且 `LLM_MOCK=true` 时走桩实现，`generate` 节点按问题关键词选择预置 SQL，可以验证整条编排链路，但 SQL 不代表模型能力。
-- 填入密钥后必须把 `LLM_MOCK` 置为 `false`，否则仍然走桩实现。
-
-这一对配置也可以在界面上改，见 6.7 节。
+> [!IMPORTANT]
+> 首次启动最容易出问题的一项是桩实现与密钥的关系：
+>
+> - `.env` 中 `LLM_API_KEY` 留空且 `LLM_MOCK=true` 时走桩实现，`generate` 节点按问题关键词选择预置 SQL，可以验证整条编排链路，但 SQL 不代表模型能力。
+> - 填入密钥后必须把 `LLM_MOCK` 置为 `false`，否则仍然走桩实现。
+>
+> 这一对配置也可以在界面上改，见 6.7 节。
 
 ### 3.4 生成样例数据库
 
@@ -154,7 +223,8 @@ cd C:\Text2SQL\backend
 
 浏览器打开 <http://127.0.0.1:8000>。`app/main.py` 启动时检查 `frontend/dist` 是否存在，存在即挂载为静态目录，不存在则只提供 API 并在日志中说明。
 
-注意构建产物的入口 HTML 不缓存、带内容哈希的 chunk 长缓存，这是为了发版后不出现「旧入口请求已删除的旧 chunk」导致的白屏。
+> [!NOTE]
+> 构建产物的入口 HTML 不缓存、带内容哈希的 chunk 长缓存，这是为了发版后不出现「旧入口请求已删除的旧 chunk」导致的白屏。
 
 ### 4.3 进程脚本
 
@@ -256,7 +326,8 @@ curl.exe "http://127.0.0.1:8000/api/semantic/recall?q=上个季度华东区各�
 
 相对时间词为精确匹配，写法需与配置一致：配置中登记的是「近7天」而不是「最近 7 天」。「上个月」按上一个自然月换算，不等于最近 30 天。时间区间一律左闭右开，SQL 条件形如 `>= 起始 AND < 结束`。
 
-相对时间词按**数据截止日**换算，不按系统日期：数据截止 2026-09-22 时问「上个月」得到 2026-08，而不是系统日期（如 10 月）所对应的 9 月。截止日取订单与退款两表中较早的最大日期，`/api/health` 的 `data_as_of` 报的就是这个值，问答里算出来的区间与它永远对得上。数据长期不刷新时区间会随之滞后，这是刻意为之——按系统日期换算会落到没有数据的月份，语句能执行、结果必然是空。
+> [!IMPORTANT]
+> 相对时间词按**数据截止日**换算，不按系统日期：数据截止 2026-09-22 时问「上个月」得到 2026-08，而不是系统日期（如 10 月）所对应的 9 月。截止日取订单与退款两表中较早的最大日期，`/api/health` 的 `data_as_of` 报的就是这个值，问答里算出来的区间与它永远对得上。数据长期不刷新时区间会随之滞后，这是刻意为之——按系统日期换算会落到没有数据的月份，语句能执行、结果必然是空。
 
 ### 6.3 一轮回答的构成
 
@@ -335,9 +406,10 @@ curl.exe "http://127.0.0.1:8000/api/semantic/recall?q=上个季度华东区各�
 | `paying_users` | 成交用户数 | `COUNT(DISTINCT orders.user_id)` | 区间内多次下单只计一次 |
 | `gross_profit` | 毛利 | `SUM(oi.quantity * (oi.unit_price - p.cost_price))` | 成本取当前成本，不含履约与推广费用 |
 
-三处最容易产生分歧的地方：成交总额不扣退款；退款率的分母是订单数而非金额；时间区间左闭右开。
-
-数字与预期不符时，第一判断依据是口径标签，不是图表。
+> [!TIP]
+> 三处最容易产生分歧的地方：成交总额不扣退款；退款率的分母是订单数而非金额；时间区间左闭右开。
+>
+> 数字与预期不符时，第一判断依据是口径标签，不是图表。
 
 ### 7.2 终态与提示条
 
@@ -416,11 +488,10 @@ curl.exe "http://127.0.0.1:8000/api/semantic/recall?q=上个季度华东区各�
 | `DATA_STALENESS_DAYS` | `7` | 数据超过该天数未更新视为异常 |
 | `SQL_DIALECT` | `sqlite` | 守卫与提示词共用的方言，切换到 PostgreSQL 或 MySQL 时改这一项 |
 
-两点需要留意：
-
-**代码默认值与 `.env` 默认值可能不同。** 例如 `CHECKPOINTER` 在代码中的默认值是 `sqlite`，而 `.env.example` 里写的是 `memory`。pydantic 的 BaseSettings 中 `.env` 的优先级高于字段默认值，因此以 `.env` 为准。核对生效值请查 `/api/health` 的 `checkpointer` 字段，不要只看代码。
-
-**修改 `.env` 后需要重启进程。** 配置在进程启动时读取一次，`--reload` 不会因 `.env` 变化而重载。例外是设置弹窗能改的那几项，保存时会写回 `.env` 并热重载容器。
+> [!WARNING]
+> **代码默认值与 `.env` 默认值可能不同。** 例如 `CHECKPOINTER` 在代码中的默认值是 `sqlite`，而 `.env.example` 里写的是 `memory`。pydantic 的 BaseSettings 中 `.env` 的优先级高于字段默认值，因此以 `.env` 为准。核对生效值请查 `/api/health` 的 `checkpointer` 字段，不要只看代码。
+>
+> **修改 `.env` 后需要重启进程。** 配置在进程启动时读取一次，`--reload` 不会因 `.env` 变化而重载。例外是设置弹窗能改的那几项，保存时会写回 `.env` 并热重载容器。
 
 配置项也可以按改动后果分类：
 
@@ -471,7 +542,8 @@ curl.exe "http://127.0.0.1:8000/api/semantic/recall?q=上个季度华东区各�
 
 不传 `--today` 时锚点取库内 `data_as_of`（与生产链路同一来源），取不到才退回评测集的 `reference_today`；改种子数据的截止日时，`eval/cases.yaml` 里各条的日期字面量要跟着同步改。
 
-**当前基线**（2026-10-16 实测，桩实现模式，时间锚点 2026-10-14）：单元测试 548 项全部通过；评测集十二组 109 条，通过 104、跳过 5、未通过 0——`recall` 45/45、`pipeline` 9/9、`safety` 8/8、`datalineage` 5/5、`baseline` 6/6、`drilldown` 7/7、`robust` 2/2、`alert` 5/5、`multiturn` 5/5、`outofscope` 8/8、`slotcoverage` 4/4。原始报告见 `backend/eval/report-baseline-2026-10-16.json`。
+> [!NOTE]
+> **当前基线**（2026-10-16 实测，桩实现模式，时间锚点 2026-10-14）：单元测试 548 项全部通过；评测集十二组 109 条，通过 104、跳过 5、未通过 0——`recall` 45/45、`pipeline` 9/9、`safety` 8/8、`datalineage` 5/5、`baseline` 6/6、`drilldown` 7/7、`robust` 2/2、`alert` 5/5、`multiturn` 5/5、`outofscope` 8/8、`slotcoverage` 4/4。原始报告见 `backend/eval/report-baseline-2026-10-16.json`。
 
 `pipeline` 与 `multiturn` 在桩实现下各另有 1 条跳过，分别是闲聊分支与多轮改写，都依赖真实模型的意图判断；`advanced` 的 3 条覆盖窗口函数与 CTE，同样标记为需要真实模型。它们切换到真实模型后自动生效。桩模式下的各组只反映链路可用性，不代表模型的生成能力；真实模型下的覆盖率见 `docs/设计文档/已知限制.md`。基线的详细读法见 `backend/eval/README.md`。
 
@@ -516,7 +588,8 @@ Linux 下用 crontab：
 
 Windows 下用任务计划程序创建每小时执行一次的任务，操作填 `curl.exe`，参数填 `-X POST http://127.0.0.1:8000/api/alert/check`。
 
-忘配这项时订阅会静默地不工作，页面不会报错。因此 `/api/health` 专门暴露了 `alert_last_eval_at`，长期为空即说明计划任务没有生效；连续失败次数达到阈值时，顶部状态栏会出现红色标识。
+> [!WARNING]
+> 忘配这项时订阅会静默地不工作，页面不会报错。因此 `/api/health` 专门暴露了 `alert_last_eval_at`，长期为空即说明计划任务没有生效；连续失败次数达到阈值时，顶部状态栏会出现红色标识。
 
 ### 日志
 
@@ -525,6 +598,9 @@ Windows 下用任务计划程序创建每小时执行一次的任务，操作填
 ### 接口速查
 
 完整定义与请求体格式见 <http://127.0.0.1:8000/docs>。共 32 个接口，按组分布如下。
+
+<details>
+<summary><b>展开 32 个接口的分组清单</b></summary>
 
 | 组 | 接口 |
 |---|---|
@@ -539,6 +615,8 @@ Windows 下用任务计划程序创建每小时执行一次的任务，操作填
 | 设置 | `GET/POST /api/settings` |
 | 数据源 | `POST /api/datasource/test`、`POST /api/datasource/connect` |
 | SQL 解释 | `POST /api/sql/explain` |
+
+</details>
 
 写脚本批量取数用 `/api/chat/sync`，观察节点进度用 `/api/chat` 加 `-N` 关闭缓冲。会话列表接口是单数的 `/api/session`，参数为 `keyword` 与 `include_archived`。
 
@@ -569,6 +647,9 @@ Windows 下用任务计划程序创建每小时执行一次的任务，操作填
 
 ## 十二、目录结构
 
+<details>
+<summary><b>展开目录树</b></summary>
+
 ```
 C:\Text2SQL\
 ├── backend/                 FastAPI 服务、LangGraph 编排、语义层、评测与测试
@@ -591,9 +672,12 @@ C:\Text2SQL\
 └── README.md                本文件
 ```
 
+</details>
+
 `data/ecommerce.db` 与 `data/app.db` 均为运行时产物，不入版本库：前者可由 `seed.py` 重建，后者是会话历史与检查点。
 
-改动代码时有三条分层约束由测试自动核对：`app/agent/nodes/` 下不出现数据库连接，只能调用 `app/db/repository.py` 暴露的方法；`app/semantic/` 下不出现模型调用与 SQL 执行，保持纯函数；密钥只出现在 `.env`，代码与配置文件中不出现字面量。
+> [!NOTE]
+> 改动代码时有三条分层约束由测试自动核对：`app/agent/nodes/` 下不出现数据库连接，只能调用 `app/db/repository.py` 暴露的方法；`app/semantic/` 下不出现模型调用与 SQL 执行，保持纯函数；密钥只出现在 `.env`，代码与配置文件中不出现字面量。
 
 ---
 
