@@ -1050,28 +1050,3 @@ T45 之后积压的四件事合并为同一批次，已全部执行完毕。方�
 ### 未闭合
 
 真实模型未复验，`generate` 一类 0 条、标签未经真实场景检验；修法建议是静态文案，不指名具体指标与配置行；前端未按 T48 既定边界做浏览器视觉回归。
-
-## T50　失败归因接入运行时与前端（已完成）
-
-实施日期：2026-10-19　｜　范围：T49 未闭合项之三，方案 §6.2 / §6.3
-
-把评测报表里的失败四归因搬到运行时与界面：判定逻辑收进单一模块，接口结果带
-`failure_attribution`，对话页与表单页两个失败分支按归因给修法方向。逐项验收见
-`docs/设计文档/T50-失败归因接入-验收概览.md`。
-
-| 子项 | 结果 |
-|---|---|
-| 单一来源 | 新增 `app/agent/failure_attribution.py`：`attribute_failure` 加标签 / 修法建议常量表；`eval/_attribute` 改为薄包装，测试断言两处编码一致，漂移会红在测试上 |
-| 接口 | `summarize_result` 输出 `failure_attribution`，成功轮为 `None`；随轮次落库进 `metrics_json`（与 `slot_gaps` 同路），历史回看仍能显示 |
-| 前端 | `types.ts` 加 `FailureAttribution`；新增 `components/FailureAttribution.tsx`；`AnswerCard` 与 `FormQueryPage` 失败分支接入；`useChatStream` 补历史回看映射 |
-| 判定口径 | slot（缺口类型 / 表单条件文案）→ guard（R 编号 / 守卫）→ signature（口径 / 签名）→ generate（兜底，按证据强弱排队） |
-| 实测 | 接口层四条失败用例分别归到 slot / guard / signature / signature，四条成功轮为 `None` |
-| 基线 | pytest 594 → **612 passed / 0 failed**；eval 13 组 117 条未通过 0（条数与归因分布未变）；tsc 0 error；`npm run build` 通过 |
-
-### 编号说明
-
-方案 §7 的第四期是真实模型回归，key 仍 401，该编号继续留给回归。本批单记 T50。
-
-### 未闭合
-
-真实模型未复验，`generate` 一类 0 条、标签未经真实场景检验；修法建议是静态文案，不指名具体指标与配置行；前端未按 T48 既定边界做浏览器视觉回归。
