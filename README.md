@@ -10,6 +10,7 @@
 [![LangGraph](https://img.shields.io/badge/LangGraph-1.x-1C3C3C?style=flat-square)](https://langchain-ai.github.io/langgraph/)
 [![React](https://img.shields.io/badge/React-18-087EA4?style=flat-square&logo=react&logoColor=white)](https://react.dev/)
 [![SQLite](https://img.shields.io/badge/SQLite-只读-003B57?style=flat-square&logo=sqlite&logoColor=white)](https://www.sqlite.org/)
+[![CI](https://github.com/GuT5torm/Text2SQL/actions/workflows/ci.yml/badge.svg)](https://github.com/GuT5torm/Text2SQL/actions/workflows/ci.yml)
 
 ![指标](https://img.shields.io/badge/指标-7-blue?style=flat-square)
 ![接口](https://img.shields.io/badge/接口-32-blue?style=flat-square)
@@ -25,6 +26,16 @@
 与「把建表语句交给大模型直接写 SQL」的做法相比，本项目的差别集中在三处：指标口径写在语义层配置里而非由模型临场判断，生成的语句必须先通过 SQL 安全沙箱再执行，本轮采用的统计范围会随结果一并返回。因此同一个问题在不同时间、不同机器上的口径一致，每一个数字都能追溯到具体的表与条件。
 
 系统面向单机演示与教学实训，业务库以只读方式连接，不提供数据写入能力。
+
+## 界面一览
+
+![一次完整问答](docs/images/basic-pipeline.png)
+
+<sub>完整回答卡片：结论先行，口径与对比标签、异常切片（可下钻）、图表与明细依次展开；左栏为会话历史。</sub>
+
+| 写入类请求被拒，转建议问句 | 展开可见的执行 SQL 与安全沙箱结果 |
+|---|---|
+| ![](docs/images/guard-block.png) | ![](docs/images/sql-panel.png) |
 
 ## 处理链路
 
@@ -708,7 +719,7 @@ C:\Text2SQL\
 │   └── tests/               冒烟脚本与单元测试
 ├── frontend/                React 18 + TypeScript + Vite + Ant Design
 │   └── src/                 api / hooks / components / pages / lib
-├── docs/                    PPT、实训指导书、语料库、设计文档
+├── docs/                    设计文档与界面截图
 ├── deploy/                  nginx.conf 与 start.sh
 └── README.md                本文件
 ```
@@ -731,8 +742,6 @@ C:\Text2SQL\
 | `docs/设计文档/PRD-产品需求规格说明书.md` | 需求清单与验收标准 |
 | `docs/设计文档/功能与预期效果说明.md` | 功能点与预期表现 |
 | `docs/设计文档/使用流程说明.md` | 操作流程与结果解读的展开说明 |
-| `docs/实训指导书/` | 七份实训指导书与三份附录 |
-| `docs/语料库/` | 十八份 RAG 语料与提示词 |
 | `CHANGELOG.md` | 按批次记录的改动与验收结果 |
 | `backend/README.md` | 后端视角的启动、验证与排障 |
 | `frontend/README.md` | 前端目录、契约与自测步骤 |
